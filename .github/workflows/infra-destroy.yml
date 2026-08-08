@@ -1,0 +1,111 @@
+name: Infra Destroy
+
+# Destroys the whole stack. Requires typing "destroy" AND the target project ID.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to confirm teardown of ALL infra'
+        required: true
+        default: ""
+      project_id:
+        description: "Type the target GCP project ID (must match the configured project)"
+        required: true
+        default: ""
+
+concurrency:
+  group: infra-${{ github.ref }} # shared with Infra Build so they queue, not race
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TERRAFORM_VERSION: 1.15.5
+
+jobs:
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    environment: production
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+
+    steps:
+      # Must precede any `run:` step — the job sets working-directory: terraform,
+      # which does not exist until the repo is checked out, and bash then fails
+      # to start at all.
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Inputs via env, never interpolated into the script body (shell injection).
+      - name: Verify confirmation
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+          TYPED_PROJECT: ${{ github.event.inputs.project_id }}
+          REAL_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          if [ "$CONFIRM" != "destroy" ]; then
+            echo "::error::You must type 'destroy' to confirm."
+            exit 1
+          fi
+          if [ "$TYPED_PROJECT" != "$REAL_PROJECT" ]; then
+            echo "::error::Project ID does not match the configured target project."
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init -input=false -backend-config="bucket=${TF_STATE_BUCKET}"
+
+      - name: Back up state before destroy
+        run: |
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          DEST="gs://${TF_STATE_BUCKET}/terraforge-inference/state-backups/pre-destroy-${STAMP}.json"
+          terraform state pull > /tmp/state-backup.json
+          gcloud storage cp /tmp/state-backup.json "$DEST"
+          echo "STATE_BACKUP=$DEST" >> "$GITHUB_ENV"
+
+      - name: Plan destroy
+        run: |
+          terraform plan -destroy -input=false -out=tfplan-destroy
+          terraform show -no-color tfplan-destroy > destroy-plan.txt
+          COUNT="$(grep -cE '^  # .* will be destroyed' destroy-plan.txt || true)"
+          {
+            echo "## Destroy plan"
+            echo ""
+            echo "**${COUNT} resources will be destroyed** in \`${TF_VAR_project_id}\`."
+            echo ""
+            echo "State backed up to \`${STATE_BACKUP}\`."
+            echo ""
+            echo '```'
+            grep -E '^  # .* will be destroyed' destroy-plan.txt || echo "(none)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload destroy plan
+        uses: actions/upload-artifact@v7
+        with:
+          name: destroy-plan
+          path: terraform/destroy-plan.txt
+          retention-days: 7
+
+      - name: Terraform Destroy
+        run: terraform apply -input=false -auto-approve tfplan-destroy

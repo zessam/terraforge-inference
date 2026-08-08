@@ -1,0 +1,17 @@
+project_id = "trisec-lab"
+region     = "europe-west8"
+zone       = "europe-west8-a"
+
+# Optional. Without it the endpoint is https://<static-ip>.nip.io, which needs no
+# domain and still gets a Google-managed certificate. Set this once you own a
+# domain and it takes precedence automatically.
+# domain = "llm.example.com"
+
+# The GKE control plane is open by default so kubectl works from anywhere. It
+# still requires IAM authentication. Restrict it here if this stops being a lab.
+# master_authorized_cidrs = [
+#   {
+#     cidr_block   = "203.0.113.4/32"
+#     display_name = "office"
+#   }
+# ]
