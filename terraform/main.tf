@@ -19,6 +19,8 @@ module "project_services" {
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "artifactregistry.googleapis.com",
+    "servicenetworking.googleapis.com", # private IPs for Cloud SQL / Memorystore
+    "redis.googleapis.com",
   ]
 }
 
@@ -92,7 +94,27 @@ module "cloud_sql" {
   databases  = ["litellm", "langfuse"]
   user_name  = "litellm"
 
-  depends_on = [module.project_services]
+  # Private IP on the cluster VPC; the Helm chart connects to it directly.
+  private_network  = module.network.network_id
+  enable_public_ip = false
+
+  # module.network carries the Private Services Access peering, which must
+  # exist before an instance can be given a private IP.
+  depends_on = [module.project_services, module.network]
+}
+
+module "memorystore" {
+  source = "./modules/memorystore"
+
+  project_id         = var.project_id
+  name               = local.name
+  region             = var.region
+  authorized_network = module.network.network_id
+  tier               = var.redis_tier
+  memory_size_gb     = var.redis_memory_gb
+  labels             = local.labels
+
+  depends_on = [module.project_services, module.network]
 }
 
 # LiteLLM reaches Cloud SQL through the Auth Proxy sidecar, authenticating as
@@ -133,12 +155,15 @@ module "secrets" {
     "${local.name}-litellm-master-key" = "sk-${random_password.litellm_master_key.result}"
     "${local.name}-litellm-salt-key"   = random_password.litellm_salt_key.result
 
-    # The Auth Proxy sidecar listens on localhost, so LiteLLM connects there.
+    # Cloud SQL's private IP on the VPC, reachable from pods in the cluster.
     "${local.name}-database-url" = format(
-      "postgresql://%s:%s@127.0.0.1:5432/litellm",
+      "postgresql://%s:%s@%s:5432/litellm",
       module.cloud_sql.user_name,
       module.cloud_sql.user_password,
+      module.cloud_sql.private_ip_address,
     )
+
+    "${local.name}-redis-password" = module.memorystore.auth_string
   }
 
   # Created empty. Values are issued elsewhere and added by hand.

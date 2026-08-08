@@ -53,6 +53,24 @@ variable "user_name" {
   type        = string
 }
 
+variable "private_network" {
+  description = "VPC to attach a private IP on. Requires Private Services Access to exist first."
+  type        = string
+  default     = null
+}
+
+variable "enable_public_ip" {
+  description = "Adds a public IP. Not needed when workloads reach the instance privately."
+  type        = bool
+  default     = false
+}
+
+variable "ssl_mode" {
+  description = "ENCRYPTED_ONLY rejects plaintext. Postgres clients defaulting to sslmode=prefer negotiate TLS automatically, so this is safe with the Helm charts."
+  type        = string
+  default     = "ENCRYPTED_ONLY"
+}
+
 variable "point_in_time_recovery" {
   type    = bool
   default = false

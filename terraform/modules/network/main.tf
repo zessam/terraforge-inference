@@ -31,6 +31,30 @@ resource "google_compute_subnetwork" "this" {
   }
 }
 
+# Private Services Access: a range handed to Google so managed services
+# (Cloud SQL, Memorystore) can be peered into this VPC with private IPs.
+resource "google_compute_global_address" "psa" {
+  count = var.enable_private_services_access ? 1 : 0
+
+  name          = "${var.name}-psa"
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
+  prefix_length = var.psa_prefix_length
+  network       = google_compute_network.this.id
+}
+
+resource "google_service_networking_connection" "psa" {
+  count = var.enable_private_services_access ? 1 : 0
+
+  network                 = google_compute_network.this.id
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.psa[0].name]
+
+  # Without this, destroying the VPC fails because the peering cannot be
+  # removed while Google still holds it.
+  deletion_policy = "ABANDON"
+}
+
 resource "google_compute_router" "this" {
   name    = "${var.name}-router"
   region  = var.region

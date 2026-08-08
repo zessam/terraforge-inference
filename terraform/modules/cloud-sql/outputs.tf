@@ -3,8 +3,13 @@ output "instance_name" {
 }
 
 output "connection_name" {
-  description = "Pass to the Cloud SQL Auth Proxy sidecar."
+  description = "Instance connection name, for the Auth Proxy or gcloud."
   value       = google_sql_database_instance.this.connection_name
+}
+
+output "private_ip_address" {
+  description = "Private IP on the VPC. This is the database host the Helm chart connects to."
+  value       = google_sql_database_instance.this.private_ip_address
 }
 
 output "user_name" {

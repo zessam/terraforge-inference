@@ -88,6 +88,18 @@ variable "db_tier" {
   default     = "db-g1-small"
 }
 
+variable "redis_tier" {
+  description = "BASIC is a single node. STANDARD_HA adds a replica and roughly doubles the cost."
+  type        = string
+  default     = "BASIC"
+}
+
+variable "redis_memory_gb" {
+  description = "Memorystore size. LiteLLM uses Redis for rate-limit counters and router state, so 1GB is ample."
+  type        = number
+  default     = 1
+}
+
 variable "litellm_namespace" {
   description = "Kubernetes namespace LiteLLM runs in, for the Workload Identity binding."
   type        = string

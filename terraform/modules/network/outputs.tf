@@ -23,3 +23,8 @@ output "services_range_name" {
 output "nat_name" {
   value = google_compute_router_nat.this.name
 }
+
+output "private_services_access_id" {
+  description = "Depend on this so managed services are created only after the peering exists."
+  value       = var.enable_private_services_access ? google_service_networking_connection.psa[0].id : ""
+}

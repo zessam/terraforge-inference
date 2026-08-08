@@ -33,8 +33,23 @@ output "get_credentials" {
 }
 
 output "sql_connection_name" {
-  description = "Pass to the Cloud SQL Auth Proxy sidecar."
+  description = "Instance connection name, for the Auth Proxy or gcloud."
   value       = module.cloud_sql.connection_name
+}
+
+output "database_host" {
+  description = "Helm values: database.writer.host"
+  value       = module.cloud_sql.private_ip_address
+}
+
+output "redis_host" {
+  description = "Helm values: redis.host"
+  value       = module.memorystore.host
+}
+
+output "redis_port" {
+  description = "Helm values: redis.port"
+  value       = module.memorystore.port
 }
 
 output "litellm_gsa_email" {

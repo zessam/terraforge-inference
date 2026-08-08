@@ -30,3 +30,15 @@ variable "services_cidr" {
   type        = string
   default     = "10.8.0.0/20"
 }
+
+variable "enable_private_services_access" {
+  description = "Reserve a range and peer it to Google, so Cloud SQL and Memorystore can have private IPs on this VPC."
+  type        = bool
+  default     = true
+}
+
+variable "psa_prefix_length" {
+  description = "Size of the reserved PSA range. /16 leaves room for several managed services."
+  type        = number
+  default     = 16
+}

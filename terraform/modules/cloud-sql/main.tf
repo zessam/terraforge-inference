@@ -16,9 +16,9 @@ resource "random_password" "user" {
   special = false
 }
 
-# Public IP with no authorized networks. The only way in is the Cloud SQL Auth
-# Proxy, which authenticates over IAM and TLS. This deliberately skips the
-# VPC peering / Private Service Access setup.
+# Private IP on the cluster's VPC, reached directly by workloads in GKE. This is
+# what the LiteLLM Helm charts expect: they connect to a host:port, not through
+# a Cloud SQL Auth Proxy sidecar. Requires Private Services Access on the VPC.
 resource "google_sql_database_instance" "this" {
   name             = "${var.name}-pg"
   project          = var.project_id
@@ -38,8 +38,9 @@ resource "google_sql_database_instance" "this" {
     disk_autoresize   = true
 
     ip_configuration {
-      ipv4_enabled = true
-      ssl_mode     = "ENCRYPTED_ONLY"
+      ipv4_enabled    = var.enable_public_ip
+      private_network = var.private_network
+      ssl_mode        = var.ssl_mode
     }
 
     backup_configuration {
