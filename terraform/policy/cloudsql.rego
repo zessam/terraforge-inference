@@ -46,11 +46,16 @@ backups_enabled(s) if {
 	bc.enabled == true
 }
 
-# Database passwords must never be literals in the configuration.
+# Database passwords must never be hardcoded.
+#
+# This reads `configuration`, not `resource_changes`. In resource_changes a
+# generated password and a hardcoded one are both just a resolved string, so
+# they cannot be told apart. In configuration a literal appears as
+# `constant_value` while a generated one appears as `references`, which is the
+# distinction we actually care about.
 deny contains msg if {
-	some resource in input.resource_changes
-	resource.type == "google_sql_user"
-	is_string(resource.change.after.password)
-	count(resource.change.after.password) > 0
-	msg := sprintf("%s: password must be generated or sourced from a secret, not a literal", [resource.address])
+	walk(input.configuration, [_, node])
+	node.type == "google_sql_user"
+	node.expressions.password.constant_value
+	msg := sprintf("%s: password must not be a hardcoded literal; use random_password or a secret", [node.address])
 }
