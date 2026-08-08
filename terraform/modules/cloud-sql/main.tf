@@ -28,6 +28,10 @@ resource "google_sql_database_instance" "this" {
   deletion_protection = var.deletion_protection
 
   settings {
+    # Set explicitly: the API now defaults new instances to ENTERPRISE_PLUS,
+    # which rejects shared-core tiers and requires db-perf-optimized-N-*.
+    edition = var.edition
+
     tier              = var.tier
     availability_type = var.availability_type
     disk_size         = var.disk_size_gb

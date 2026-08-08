@@ -16,6 +16,17 @@ variable "database_version" {
   default = "POSTGRES_16"
 }
 
+variable "edition" {
+  description = "ENTERPRISE supports shared-core tiers (db-f1-micro, db-g1-small). ENTERPRISE_PLUS requires db-perf-optimized-N-* and costs substantially more."
+  type        = string
+  default     = "ENTERPRISE"
+
+  validation {
+    condition     = contains(["ENTERPRISE", "ENTERPRISE_PLUS"], var.edition)
+    error_message = "edition must be ENTERPRISE or ENTERPRISE_PLUS."
+  }
+}
+
 variable "tier" {
   type    = string
   default = "db-g1-small"
