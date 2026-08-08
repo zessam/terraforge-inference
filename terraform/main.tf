@@ -155,16 +155,15 @@ module "secrets" {
     "${local.name}-litellm-master-key" = "sk-${random_password.litellm_master_key.result}"
     "${local.name}-litellm-salt-key"   = random_password.litellm_salt_key.result
 
-    # Cloud SQL's private IP on the VPC, reachable from pods in the cluster.
-    "${local.name}-database-url" = format(
-      "postgresql://%s:%s@%s:5432/litellm",
-      module.cloud_sql.user_name,
-      module.cloud_sql.user_password,
-      module.cloud_sql.private_ip_address,
-    )
-
     "${local.name}-redis-password" = module.memorystore.auth_string
   }
+
+  # Deliberately no composed DATABASE_URL. Interpolating the sensitive password
+  # together with the instance's IP — unknown until apply — makes secret_data
+  # both sensitive and unknown at plan time, which the provider rejects with
+  # "inconsistent values for sensitive attribute". The chart takes the host,
+  # database name, and credentials as separate values anyway; see the
+  # database_host / database_user outputs.
 
   # Created empty. Values are issued elsewhere and added by hand.
   placeholder_secrets = [for s in var.placeholder_secrets : "${local.name}-${s}"]

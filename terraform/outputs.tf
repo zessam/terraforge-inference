@@ -42,6 +42,16 @@ output "database_host" {
   value       = module.cloud_sql.private_ip_address
 }
 
+output "database_user" {
+  description = "Helm values: the username key of the database secret."
+  value       = module.cloud_sql.user_name
+}
+
+output "database_name" {
+  description = "Helm values: database.writer.dbname"
+  value       = "litellm"
+}
+
 output "redis_host" {
   description = "Helm values: redis.host"
   value       = module.memorystore.host
