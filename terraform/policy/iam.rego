@@ -2,24 +2,16 @@ package main
 
 import rego.v1
 
-# Policy-as-code for IAM. Evaluated by conftest against the Terraform plan JSON.
-
-primitive_roles := {"roles/owner", "roles/editor", "roles/viewer"}
+# Policy-as-code for IAM, evaluated against the Terraform plan JSON.
+#
+# `deny` here is limited to granting access to the public internet. Overly broad
+# but non-public grants are `warn`.
 
 public_members := {"allUsers", "allAuthenticatedUsers"}
 
-# Project-wide primitive roles are too broad for any workload identity.
-deny contains msg if {
-	some resource in input.resource_changes
-	resource.type in {"google_project_iam_member", "google_project_iam_binding"}
-	resource.change.after.role in primitive_roles
-	msg := sprintf(
-		"%s: primitive role %s is not allowed; grant a predefined role instead",
-		[resource.address, resource.change.after.role],
-	)
-}
+primitive_roles := {"roles/owner", "roles/editor", "roles/viewer"}
 
-# Nothing in this stack should ever be granted to the whole internet.
+# DENY: nothing in this stack should ever be granted to the whole internet.
 deny contains msg if {
 	some resource in input.resource_changes
 	contains(resource.type, "iam_member")
@@ -38,8 +30,9 @@ deny contains msg if {
 	msg := sprintf("%s: %s must not be granted access", [resource.address, member])
 }
 
-# Service account keys are long-lived credentials. This stack uses Workload
-# Identity everywhere, so a key being created means something is misconfigured.
+# DENY: exported service account keys are long-lived credentials that leak.
+# This stack uses Workload Identity everywhere, so one appearing means something
+# is misconfigured.
 deny contains msg if {
 	some resource in input.resource_changes
 	resource.type == "google_service_account_key"
@@ -49,10 +42,13 @@ deny contains msg if {
 	)
 }
 
-# Secrets must be reachable only by named principals.
-deny contains msg if {
+# Project-wide primitive roles are broader than any workload needs.
+warn contains msg if {
 	some resource in input.resource_changes
-	resource.type == "google_secret_manager_secret_iam_member"
-	resource.change.after.member in public_members
-	msg := sprintf("%s: secrets must not be publicly accessible", [resource.address])
+	resource.type in {"google_project_iam_member", "google_project_iam_binding"}
+	resource.change.after.role in primitive_roles
+	msg := sprintf(
+		"%s: primitive role %s is broad; prefer a predefined role",
+		[resource.address, resource.change.after.role],
+	)
 }

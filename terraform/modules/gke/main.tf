@@ -16,6 +16,10 @@ resource "google_container_cluster" "this" {
   # Binary Authorization would block the upstream ghcr.io LiteLLM images until
   # attestors and an allowlist policy exist. Revisit when images are built here.
   #checkov:skip=CKV_GCP_66:no attestor infrastructure yet
+  # Calico rolls out a DaemonSet and restarts every node, and its enablement is
+  # a long cluster operation that collides with other pending changes. Not worth
+  # it for a single-tenant study cluster.
+  #checkov:skip=CKV_GCP_12:network policy omitted deliberately
 
   name     = "${var.name}-gke"
   project  = var.project_id
@@ -72,19 +76,6 @@ resource "google_container_cluster" "this" {
   master_auth {
     client_certificate_config {
       issue_client_certificate = false
-    }
-  }
-
-  # Default-deny between pods until a NetworkPolicy allows it. Enabling this
-  # restarts nodes as the Calico agent rolls out.
-  network_policy {
-    enabled  = true
-    provider = "CALICO"
-  }
-
-  addons_config {
-    network_policy_config {
-      disabled = false
     }
   }
 
