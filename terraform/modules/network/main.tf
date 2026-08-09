@@ -29,6 +29,14 @@ resource "google_compute_subnetwork" "this" {
     range_name    = local.services_range
     ip_cidr_range = var.services_cidr
   }
+
+  # Sampled rather than full capture: enough to investigate a connectivity
+  # problem without the log volume of every packet flow.
+  log_config {
+    aggregation_interval = "INTERVAL_5_SEC"
+    flow_sampling        = var.flow_log_sampling
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
 }
 
 # Private Services Access: a range handed to Google so managed services
@@ -53,6 +61,30 @@ resource "google_service_networking_connection" "psa" {
   # Without this, destroying the VPC fails because the peering cannot be
   # removed while Google still holds it.
   deletion_policy = "ABANDON"
+}
+
+# A custom-mode VPC has no default rules, only the implied deny-ingress. This
+# states the intra-VPC allowance explicitly rather than leaving it implicit.
+resource "google_compute_firewall" "internal" {
+  name        = "${var.name}-allow-internal"
+  network     = google_compute_network.this.name
+  description = "Allow traffic between nodes, pods, and services inside the VPC"
+
+  direction     = "INGRESS"
+  priority      = 1000
+  source_ranges = [var.subnet_cidr, var.pods_cidr, var.services_cidr]
+
+  allow {
+    protocol = "tcp"
+  }
+
+  allow {
+    protocol = "udp"
+  }
+
+  allow {
+    protocol = "icmp"
+  }
 }
 
 resource "google_compute_router" "this" {

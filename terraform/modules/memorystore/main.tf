@@ -10,6 +10,12 @@ terraform {
 # Redis for LiteLLM rate limiting, router state, and cross-replica caching.
 # Reachable only from the authorized VPC — it has no public address.
 resource "google_redis_instance" "this" {
+  # TLS would require the LiteLLM chart to trust the Memorystore CA, which its
+  # redis config does not expose. Traffic never leaves the VPC and AUTH is on.
+  # Flip transit_encryption_mode to SERVER_AUTHENTICATION once the client can
+  # be given the CA bundle.
+  #checkov:skip=CKV_GCP_97:private VPC path with AUTH enabled; client cannot supply a CA yet
+
   name    = "${var.name}-redis"
   project = var.project_id
   region  = var.region

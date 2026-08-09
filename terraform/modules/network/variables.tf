@@ -42,3 +42,9 @@ variable "psa_prefix_length" {
   type        = number
   default     = 16
 }
+
+variable "flow_log_sampling" {
+  description = "Fraction of flows logged. Flow logs bill as Cloud Logging volume, so full capture is rarely worth it."
+  type        = number
+  default     = 0.5
+}

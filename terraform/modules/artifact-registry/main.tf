@@ -8,6 +8,11 @@ terraform {
 }
 
 resource "google_artifact_registry_repository" "this" {
+  # CMEK means running and paying for a KMS key, plus owning its rotation and
+  # the risk of locking the registry out. Not warranted here: contents are
+  # public base images, and Google-managed encryption at rest is always on.
+  #checkov:skip=CKV_GCP_84:Google-managed encryption is sufficient for this registry
+
   project       = var.project_id
   location      = var.location
   repository_id = var.repository_id

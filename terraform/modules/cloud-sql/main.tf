@@ -20,6 +20,10 @@ resource "random_password" "user" {
 # what the LiteLLM Helm charts expect: they connect to a host:port, not through
 # a Cloud SQL Auth Proxy sidecar. Requires Private Services Access on the VPC.
 resource "google_sql_database_instance" "this" {
+  # ssl_mode = ENCRYPTED_ONLY is the modern replacement for the deprecated
+  # require_ssl flag this check looks for; it enforces the same thing.
+  #checkov:skip=CKV_GCP_6:enforced via ssl_mode, not the deprecated require_ssl
+
   name             = "${var.name}-pg"
   project          = var.project_id
   region           = var.region
@@ -47,6 +51,71 @@ resource "google_sql_database_instance" "this" {
       enabled                        = true
       point_in_time_recovery_enabled = var.point_in_time_recovery
       start_time                     = "03:00"
+    }
+
+    # Audit logging baseline. Written as static blocks rather than a dynamic
+    # block over a map, because static analysers cannot resolve dynamic blocks
+    # and would report these as missing.
+    database_flags {
+      name  = "log_checkpoints"
+      value = "on"
+    }
+
+    database_flags {
+      name  = "log_connections"
+      value = "on"
+    }
+
+    database_flags {
+      name  = "log_disconnections"
+      value = "on"
+    }
+
+    database_flags {
+      name  = "log_hostname"
+      value = "on"
+    }
+
+    database_flags {
+      name  = "log_min_messages"
+      value = "error"
+    }
+
+    # Distinct from log_min_messages: this controls which statements are logged
+    # alongside an error, and is the flag the audit baseline actually asserts.
+    database_flags {
+      name  = "log_min_error_statement"
+      value = "error"
+    }
+
+    database_flags {
+      name  = "log_duration"
+      value = "on"
+    }
+
+    database_flags {
+      name  = "log_lock_waits"
+      value = "on"
+    }
+
+    database_flags {
+      name  = "log_statement"
+      value = "ddl"
+    }
+
+    database_flags {
+      name  = "cloudsql.enable_pgaudit"
+      value = "on"
+    }
+
+    # Anything environment-specific, e.g. max_connections tuning.
+    dynamic "database_flags" {
+      for_each = var.extra_database_flags
+
+      content {
+        name  = database_flags.key
+        value = database_flags.value
+      }
     }
   }
 }

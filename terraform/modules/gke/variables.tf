@@ -74,6 +74,12 @@ variable "node_labels" {
   default = {}
 }
 
+variable "resource_labels" {
+  description = "Labels on the cluster itself, for cost attribution."
+  type        = map(string)
+  default     = {}
+}
+
 variable "release_channel" {
   type    = string
   default = "REGULAR"

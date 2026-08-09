@@ -13,7 +13,13 @@ variable "region" {
 
 variable "database_version" {
   type    = string
-  default = "POSTGRES_16"
+  default = "POSTGRES_18"
+}
+
+variable "extra_database_flags" {
+  description = "Additional Postgres flags, merged with the audit-logging baseline set in the module."
+  type        = map(string)
+  default     = {}
 }
 
 variable "edition" {

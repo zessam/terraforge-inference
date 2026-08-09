@@ -82,6 +82,7 @@ module "gke" {
   machine_type            = var.node_machine_type
   node_count              = var.node_count
   node_labels             = local.labels
+  resource_labels         = local.labels
 }
 
 module "cloud_sql" {
