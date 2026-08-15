@@ -85,11 +85,12 @@ metadata:
   labels:
     app.kubernetes.io/name: streamlit
 spec:
-  # Its own external IP, like the LiteLLM services. HTTP only — this page sends
-  # prompts and shows completions in clear text, and it holds no login of its
-  # own, so anyone with the IP can spend your model budget. Fine while
-  # building; put auth in front of it before it stays up.
-  type: LoadBalancer
+  # ClusterIP. This page has no login of its own and holds a key that can spend
+  # the model budget, so an external IP would put exactly that on the internet.
+  # Reach it by port-forward:
+  #
+  #   kubectl -n llm-system port-forward svc/streamlit 8501:80
+  type: ClusterIP
   selector:
     app.kubernetes.io/name: streamlit
   ports:

@@ -191,17 +191,14 @@ gateway:
     tag: "v1.96.2"
     pullPolicy: IfNotPresent
 
-  # LoadBalancer, not ClusterIP behind an Ingress. GKE Ingress needed a managed
-  # certificate that never provisioned, because the chart's path map contains a
-  # rule GCE cannot express (/*.txt, written for the AWS Load Balancer
-  # Controller) — so the URL map never programmed, nothing served on the
-  # reserved IP, and cert validation failed with FAILED_NOT_VISIBLE.
+  # ClusterIP. Nothing outside the cluster calls the gateway: Streamlit reaches
+  # it at http://litellm-gateway:4000, and a laptop reaches it by port-forward.
+  # A LoadBalancer would cost a forwarding rule per service and put an
+  # unauthenticated HTTP endpoint on the internet, for one user.
   #
-  # A plain L4 LoadBalancer skips the URL map entirely. The cost is TLS: this
-  # serves HTTP only, so the master key crosses the internet in clear text.
-  # Acceptable while building; not acceptable once anything real depends on it.
+  #   kubectl -n llm-system port-forward svc/litellm-gateway 4000:4000
   service:
-    type: LoadBalancer
+    type: ClusterIP
     port: 4000
 
   # Trimmed from the chart defaults (1 CPU / 4Gi requests). Two nodes offer
@@ -257,10 +254,12 @@ backend:
     tag: "v1.96.2"
     pullPolicy: IfNotPresent
 
-  # Also external: the Admin UI is a browser app that calls this API directly,
-  # so it must be reachable from wherever the browser is, not just in-cluster.
+  # The Admin UI is a browser app that calls this API directly, so whatever
+  # address the browser can reach is the one that has to go in ui.backendUrl.
+  # With port-forward that is localhost, which is also why this needs no
+  # external IP.
   service:
-    type: LoadBalancer
+    type: ClusterIP
     port: 4001
 
   # Smaller than the gateway on purpose: the management API serves key/team/user
@@ -291,15 +290,19 @@ ui:
     pullPolicy: IfNotPresent
 
   service:
-    type: LoadBalancer
+    type: ClusterIP
     port: 3000
 
   # Where the browser reaches the management API. This is a browser-side URL, so
   # it must be the external ingress host, not an in-cluster Service name.
-  # The backend Service's external IP, which only exists after the first
-  # deploy. Chicken-and-egg: deploy once, read the IP, set it here, upgrade.
-  #   kubectl -n llm-system get svc litellm-backend
-  backendUrl: "http://REPLACE-BACKEND-IP:4001"
+  # Where the BROWSER reaches the backend, not where the pod does. With both
+  # Services port-forwarded that is localhost, and it needs no deploy-read-
+  # IP-redeploy round trip:
+  #
+  #   kubectl -n llm-system port-forward svc/litellm-ui 3000:3000 &
+  #   kubectl -n llm-system port-forward svc/litellm-backend 4001:4001 &
+  #   open http://localhost:3000
+  backendUrl: "http://localhost:4001"
 
   # A static nginx serving a pre-built bundle. It needs almost nothing.
   resources:

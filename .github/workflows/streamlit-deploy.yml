@@ -124,23 +124,15 @@ jobs:
             gke/streamlit/deployment.yaml | kubectl apply -f -
           kubectl -n "$NAMESPACE" rollout status deployment/streamlit --timeout=5m
 
-      # A LoadBalancer address takes a minute or two to appear, and the whole
-      # point of this pipeline is handing back a URL.
-      - name: URL
+      # ClusterIP, so there is no URL to hand back — print how to reach it.
+      - name: How to reach it
         run: |
-          for i in $(seq 1 30); do
-            IP=$(kubectl -n "$NAMESPACE" get svc streamlit \
-              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-            [ -n "$IP" ] && break
-            sleep 10
-          done
           {
             echo "### Streamlit"
-            if [ -n "$IP" ]; then
-              echo "http://${IP}"
-            else
-              echo "LoadBalancer IP not assigned yet — \`kubectl -n $NAMESPACE get svc streamlit\`"
-            fi
+            echo '```bash'
+            echo "kubectl -n ${NAMESPACE} port-forward svc/streamlit 8501:80"
+            echo "# then http://localhost:8501"
+            echo '```'
             echo
             echo '```'
             kubectl -n "$NAMESPACE" get svc streamlit litellm-gateway litellm-ui litellm-backend
