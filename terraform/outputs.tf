@@ -1,28 +1,3 @@
-output "litellm_endpoint" {
-  description = "Base URL for the gateway. Usable immediately, no domain required."
-  value       = module.load_balancer.endpoint
-}
-
-output "litellm_hostname" {
-  description = "DNS name resolving to the load balancer."
-  value       = module.load_balancer.hostname
-}
-
-output "litellm_ip" {
-  description = "Static IP behind the hostname."
-  value       = module.load_balancer.address
-}
-
-output "litellm_ip_name" {
-  description = "Ingress annotation: kubernetes.io/ingress.global-static-ip-name"
-  value       = module.load_balancer.address_name
-}
-
-output "litellm_certificate_name" {
-  description = "Ingress annotation: ingress.gcp.kubernetes.io/pre-shared-cert"
-  value       = module.load_balancer.certificate_name
-}
-
 output "cluster_name" {
   value = module.gke.name
 }
@@ -92,22 +67,3 @@ output "langfuse_gsa_email" {
   value       = module.langfuse_service_account.email
 }
 
-output "langfuse_endpoint" {
-  description = "Base URL for the Langfuse UI. Empty unless expose_langfuse is true."
-  value       = try(module.langfuse_load_balancer[0].endpoint, "")
-}
-
-output "langfuse_hostname" {
-  description = "Helm values: langfuse.ingress.hosts[0].host, and langfuse.nextauth.url must match it."
-  value       = try(module.langfuse_load_balancer[0].hostname, "")
-}
-
-output "langfuse_ip_name" {
-  description = "Ingress annotation: kubernetes.io/ingress.global-static-ip-name"
-  value       = try(module.langfuse_load_balancer[0].address_name, "")
-}
-
-output "langfuse_certificate_name" {
-  description = "Ingress annotation: ingress.gcp.kubernetes.io/pre-shared-cert"
-  value       = try(module.langfuse_load_balancer[0].certificate_name, "")
-}

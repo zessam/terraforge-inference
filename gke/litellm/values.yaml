@@ -191,8 +191,17 @@ gateway:
     tag: "v1.96.2"
     pullPolicy: IfNotPresent
 
+  # LoadBalancer, not ClusterIP behind an Ingress. GKE Ingress needed a managed
+  # certificate that never provisioned, because the chart's path map contains a
+  # rule GCE cannot express (/*.txt, written for the AWS Load Balancer
+  # Controller) — so the URL map never programmed, nothing served on the
+  # reserved IP, and cert validation failed with FAILED_NOT_VISIBLE.
+  #
+  # A plain L4 LoadBalancer skips the URL map entirely. The cost is TLS: this
+  # serves HTTP only, so the master key crosses the internet in clear text.
+  # Acceptable while building; not acceptable once anything real depends on it.
   service:
-    type: ClusterIP
+    type: LoadBalancer
     port: 4000
 
   # Trimmed from the chart defaults (1 CPU / 4Gi requests). Two nodes offer
@@ -248,8 +257,10 @@ backend:
     tag: "v1.96.2"
     pullPolicy: IfNotPresent
 
+  # Also external: the Admin UI is a browser app that calls this API directly,
+  # so it must be reachable from wherever the browser is, not just in-cluster.
   service:
-    type: ClusterIP
+    type: LoadBalancer
     port: 4001
 
   # Smaller than the gateway on purpose: the management API serves key/team/user
@@ -280,12 +291,15 @@ ui:
     pullPolicy: IfNotPresent
 
   service:
-    type: ClusterIP
+    type: LoadBalancer
     port: 3000
 
   # Where the browser reaches the management API. This is a browser-side URL, so
   # it must be the external ingress host, not an in-cluster Service name.
-  backendUrl: "https://8.232.205.26.nip.io"
+  # The backend Service's external IP, which only exists after the first
+  # deploy. Chicken-and-egg: deploy once, read the IP, set it here, upgrade.
+  #   kubectl -n llm-system get svc litellm-backend
+  backendUrl: "http://REPLACE-BACKEND-IP:4001"
 
   # A static nginx serving a pre-built bundle. It needs almost nothing.
   resources:
@@ -301,31 +315,18 @@ ui:
 
 # ---------------------------------------------------------------- ingress ---
 
-# One GKE Ingress fronting all three Services, on the static IP and managed
-# certificate Terraform reserved. GKE builds the load balancer from this object;
-# Terraform only reserved the address and the cert, which the annotations below
-# borrow by name.
+# Off, and this is why.
 #
-# The chart renders 91 path rules: UI paths to ui, ~80 data-plane prefixes
-# (/v1/chat, /v1/embeddings, /v1/models, ...) to gateway, and a catch-all to
-# backend. The long explicit list exists because management routes also live
-# under /v1 and /v2, so a single broad /v1 prefix would misroute them.
+# GKE Ingress needed a Google-managed certificate that never provisioned. The
+# chart renders 91 path rules, and one of them is `/*.txt` (pathType
+# ImplementationSpecific) — written for the AWS Load Balancer Controller, as the
+# chart's own comment says. A GCE path rule only treats a trailing `/*` as a
+# wildcard, so GCE rejected the URL map outright: the Ingress never got an
+# address, nothing served on the reserved IP, and certificate validation failed
+# with FAILED_NOT_VISIBLE.
 #
-# One of those 91, `/*.txt` (pathType ImplementationSpecific), is written for
-# the AWS Load Balancer Controller — the chart's own comment says so. A GCE path
-# rule only treats a trailing `/*` as a wildcard, so on GKE that rule at best
-# never matches. If GCE rejects it outright the Ingress will not sync at all;
-# README.md, "The /*.txt rule", covers how to tell and what to do.
+# The three Services above are type LoadBalancer instead — one external IP each,
+# plain L4, no URL map and no certificate to provision. See the note on the
+# gateway Service for what that costs.
 ingress:
-  enabled: true
-  className: gce
-  host: 8.232.205.26.nip.io
-  annotations:
-    kubernetes.io/ingress.global-static-ip-name: terraforge-dev-litellm-ip
-    ingress.gcp.kubernetes.io/pre-shared-cert: terraforge-dev-litellm-cert
-    # Left on so the endpoint is reachable while the managed certificate
-    # provisions (15-60 min). Flip to "false" afterwards.
-    kubernetes.io/ingress.allow-http: "true"
-  # No tls block: the certificate is pre-shared by name above, so there is no
-  # Kubernetes TLS secret for the ingress to mount.
-  tls: []
+  enabled: false

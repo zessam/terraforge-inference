@@ -28,24 +28,6 @@ variable "env" {
   default     = "dev"
 }
 
-variable "domain" {
-  description = "Real domain for the LiteLLM endpoint. Empty falls back to wildcard DNS."
-  type        = string
-  default     = ""
-}
-
-variable "use_wildcard_dns" {
-  description = "With no real domain, derive a hostname from the reserved IP. GCP load balancers have no DNS name of their own, unlike an AWS ELB."
-  type        = bool
-  default     = true
-}
-
-variable "wildcard_dns_suffix" {
-  description = "Wildcard DNS provider: nip.io or sslip.io."
-  type        = string
-  default     = "nip.io"
-}
-
 variable "placeholder_secrets" {
   description = "Secrets created empty because a third party issues them and Terraform cannot generate them. Prefixed with the environment name. Everything else is generated; see the secrets map in main.tf."
   type        = list(string)
@@ -115,14 +97,3 @@ variable "observability_namespace" {
   default     = "observability"
 }
 
-variable "expose_langfuse" {
-  description = "Reserve a static IP and managed certificate so the Langfuse UI can be served through a GKE Ingress. Off means the UI is reachable only by port-forward, which is the safer default: Langfuse stores full prompt and response text."
-  type        = bool
-  default     = false
-}
-
-variable "langfuse_domain" {
-  description = "Real domain for the Langfuse UI. Empty falls back to wildcard DNS, the same way the LiteLLM endpoint does."
-  type        = string
-  default     = ""
-}

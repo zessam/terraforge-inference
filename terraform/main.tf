@@ -289,34 +289,12 @@ module "secrets" {
   depends_on = [module.project_services]
 }
 
-module "load_balancer" {
-  source = "./modules/load-balancer"
-
-  project_id          = var.project_id
-  name                = "${local.name}-litellm"
-  domain              = var.domain
-  use_wildcard_dns    = var.use_wildcard_dns
-  wildcard_dns_suffix = var.wildcard_dns_suffix
-
-  depends_on = [module.project_services]
-}
-
-# A second address and certificate for the Langfuse UI.
+# No load balancer module.
 #
-# Not a path on the LiteLLM load balancer: two GKE Ingresses cannot share one
-# global address, and the LiteLLM chart's path map ends in a catch-all to its
-# own backend with no way to add routes in chart 1.96.2. Separate hostnames are
-# the honest way to run two web UIs here.
-module "langfuse_load_balancer" {
-  count = var.expose_langfuse ? 1 : 0
-
-  source = "./modules/load-balancer"
-
-  project_id          = var.project_id
-  name                = "${local.name}-langfuse"
-  domain              = var.langfuse_domain
-  use_wildcard_dns    = var.use_wildcard_dns
-  wildcard_dns_suffix = var.wildcard_dns_suffix
-
-  depends_on = [module.project_services]
-}
+# The static IP and managed certificate it reserved were for a GKE Ingress that
+# could not work: the LiteLLM chart's path map contains a rule GCE cannot
+# express, so the URL map never programmed and certificate validation failed
+# with FAILED_NOT_VISIBLE. The Services are type LoadBalancer now, and GKE
+# allocates their addresses directly — nothing for Terraform to reserve.
+#
+# Reinstate ./modules/load-balancer if a real domain and an Ingress come back.
