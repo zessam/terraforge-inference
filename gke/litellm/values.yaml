@@ -1,0 +1,296 @@
+# LiteLLM gateway — componentized `litellm` chart (microservices mode).
+#
+#   helm upgrade --install litellm oci://ghcr.io/berriai/litellm/chart/litellm \
+#     --version 1.96.2 -n llm-system -f gke/litellm/values.yaml
+#
+# Three deployments instead of one: gateway (:4000, LLM traffic), backend
+# (:4001, management API), ui (:3000, static Next.js dashboard). Each scales on
+# its own, which is the point — LLM traffic is the only part that ever spikes,
+# and the backend and UI should not be dragged along with it.
+#
+# This is the mode terraform/outputs.tf was written for: its output descriptions
+# name `database.writer.host` and `redis.host`, which are this chart's keys.
+#
+# The chart requires external Postgres and Redis — it ships no subcharts — which
+# is exactly what Terraform provisioned. Every credential comes out of Secret
+# Manager via the ExternalSecrets in secrets.yaml; nothing sensitive is set here.
+
+# Without this, release name + chart name both being "litellm" renders every
+# object as "litellm-litellm-gateway". This gives "litellm-gateway".
+fullnameOverride: litellm
+
+# ---------------------------------------------------------------- identity ---
+
+# The chart no longer accepts an inline master key, only a Secret reference.
+# Injected as LITELLM_MASTER_KEY into gateway, backend, and the migrations Job.
+masterKey:
+  secretName: litellm-masterkey
+  secretKey: masterkey
+
+# Gateway and backend run as the llm-system/litellm ServiceAccount, created in
+# secrets.yaml rather than here: the SecretStore impersonates it too, and
+# Terraform's IAM grant points at that exact name.
+#
+# The UI gets the namespace default SA with no token mounted: a static nginx
+# container has no business calling the K8s API or the GCE metadata server.
+serviceAccounts:
+  gateway:
+    create: false
+    name: litellm
+    automount: true
+  backend:
+    create: false
+    name: litellm
+    automount: true
+  ui:
+    create: false
+    automount: false
+
+# ------------------------------------------------------------- data stores ---
+
+database:
+  writer:
+    host: "10.141.0.3" # Cloud SQL private IP, terraform output database_host
+    port: 5432
+    dbname: litellm
+    useIAMAuth: false # Cloud SQL IAM auth is unsupported; LiteLLM's IAM path is RDS-only
+    passwordSecret:
+      name: litellm-db
+      usernameKey: username
+      passwordKey: password
+  # No read replica. The Cloud SQL instance is a single db-g1-small; add
+  # `reader.host` here if one is ever provisioned.
+  reader:
+    host: ""
+
+# Memorystore. The chart emits REDIS_HOST / REDIS_PORT / REDIS_PASSWORD and the
+# proxy picks them up through its coordination-Redis env fallback, so no
+# coordination_redis block is needed in proxy_config. This is what makes
+# rate limits and budgets count across replicas instead of per pod.
+redis:
+  cluster: false # Memorystore BASIC tier is a single node, not a cluster
+  host: "10.141.119.251"
+  port: 6379
+  passwordSecret:
+    name: litellm-redis
+    passwordKey: password
+
+# Applies the Prisma schema as a pre-install/pre-upgrade Helm hook, so it
+# finishes before any gateway or backend pod starts against an empty database.
+# Uses its own slim image rather than the backend image.
+migrationJob:
+  enabled: true
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 120
+  automountServiceAccountToken: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# ---------------------------------------------------------------- gateway ---
+
+gateway:
+  enabled: true
+  logLevel: INFO
+  numWorkers: 1
+
+  # Carries LITELLM_SALT_KEY, and any provider API keys added later. Reconciled
+  # from Secret Manager by the ExternalSecret of the same name.
+  envSecrets:
+    - litellm-env
+
+  extraEnv:
+    - name: STORE_MODEL_IN_DB
+      value: "True"
+
+  config:
+    create: true
+    proxy_config:
+      model_list:
+        # One vLLM pod on RunPod, reached on its public proxy URL. Task-based
+        # aliases so client code never names a real model — swapping the pod or
+        # the model is an edit here, not a change in every caller.
+        #
+        # FILL IN before deploying: <POD_ID> is the RunPod pod id, and
+        # <SERVED_MODEL_NAME> is what the pod reports at GET /v1/models — the
+        # value of vLLM's --served-model-name, or the Hugging Face repo id if
+        # that flag was not used. LiteLLM sends it verbatim and vLLM rejects
+        # anything else.
+        #
+        # The `openai/` prefix selects LiteLLM's OpenAI-compatible client; it is
+        # not a claim that the model is an OpenAI one.
+        - model_name: terraform-code-fast
+          litellm_params: &vllm
+            model: openai/<SERVED_MODEL_NAME>
+            api_base: https://<POD_ID>-8000.proxy.runpod.net/v1
+            api_key: os.environ/VLLM_API_KEY
+
+        # Same backend for now, separate names so per-key model allowlists and
+        # budgets can be drawn per task, and so a second pod can take one over
+        # later without touching callers.
+        - model_name: terraform-rag-answer
+          litellm_params: *vllm
+        - model_name: terraform-review
+          litellm_params: *vllm
+
+        # Answers a real completion without touching RunPod, so the gateway,
+        # Ingress, Cloud SQL, and Redis can be verified on their own. Drop it
+        # once the RunPod path is confirmed working.
+        - model_name: smoke-test
+          litellm_params:
+            model: openai/fake
+            api_key: fake-key
+            api_base: https://exampleopenaiendpoint-production.up.railway.app/
+      litellm_settings:
+        # vLLM rejects OpenAI parameters it does not implement. Dropping them
+        # keeps an unmodified OpenAI SDK client working against a local backend.
+        drop_params: true
+      # No general_settings.master_key: the chart injects LITELLM_MASTER_KEY as
+      # an env var, which the proxy reads natively.
+
+  image:
+    repository: ghcr.io/berriai/litellm-gateway
+    # Defaults to the chart's appVersion (v1.96.2). Pinned so a rollback lands
+    # on a known image rather than on whatever the chart last pointed at.
+    tag: "v1.96.2"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 4000
+
+  # Trimmed from the chart defaults (1 CPU / 4Gi requests). Two nodes offer
+  # 7840m CPU and ~27Gi allocatable, of which ~1.5 CPU is already taken by
+  # kube-system and managed Prometheus, and the observability stack in steps
+  # 23-25 still has to fit.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+  # Two replicas so a node drain never takes the data plane to zero. The ceiling
+  # is set by Postgres, not CPU: the connection pool is per worker, so replicas
+  # multiply into database connections and db-g1-small is a shared-core
+  # instance. Three replicas at the default pool of 10 asks for ~30 connections.
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: gateway
+
+# ---------------------------------------------------------------- backend ---
+
+backend:
+  enabled: true
+  logLevel: INFO
+
+  envSecrets:
+    - litellm-env
+
+  extraEnv:
+    - name: STORE_MODEL_IN_DB
+      value: "True"
+
+  image:
+    repository: ghcr.io/berriai/litellm-backend
+    tag: "v1.96.2"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 4001
+
+  # Smaller than the gateway on purpose: the management API serves key/team/user
+  # CRUD and UI queries, not LLM traffic. This is the whole reason to run
+  # componentized — the backend stays fixed while the gateway scales.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 2
+    targetCPUUtilizationPercentage: 70
+
+# --------------------------------------------------------------------- ui ---
+
+ui:
+  enabled: true
+
+  image:
+    repository: ghcr.io/berriai/litellm-ui
+    tag: "v1.96.2"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 3000
+
+  # Where the browser reaches the management API. This is a browser-side URL, so
+  # it must be the external ingress host, not an in-cluster Service name.
+  backendUrl: "https://8.232.205.26.nip.io"
+
+  # A static nginx serving a pre-built bundle. It needs almost nothing.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  hpa:
+    enabled: false
+
+# ---------------------------------------------------------------- ingress ---
+
+# One GKE Ingress fronting all three Services, on the static IP and managed
+# certificate Terraform reserved. GKE builds the load balancer from this object;
+# Terraform only reserved the address and the cert, which the annotations below
+# borrow by name.
+#
+# The chart renders 91 path rules: UI paths to ui, ~80 data-plane prefixes
+# (/v1/chat, /v1/embeddings, /v1/models, ...) to gateway, and a catch-all to
+# backend. The long explicit list exists because management routes also live
+# under /v1 and /v2, so a single broad /v1 prefix would misroute them.
+#
+# One of those 91, `/*.txt` (pathType ImplementationSpecific), is written for
+# the AWS Load Balancer Controller — the chart's own comment says so. A GCE path
+# rule only treats a trailing `/*` as a wildcard, so on GKE that rule at best
+# never matches. If GCE rejects it outright the Ingress will not sync at all;
+# README.md, "The /*.txt rule", covers how to tell and what to do.
+ingress:
+  enabled: true
+  className: gce
+  host: 8.232.205.26.nip.io
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: terraforge-dev-litellm-ip
+    ingress.gcp.kubernetes.io/pre-shared-cert: terraforge-dev-litellm-cert
+    # Left on so the endpoint is reachable while the managed certificate
+    # provisions (15-60 min). Flip to "false" afterwards.
+    kubernetes.io/ingress.allow-http: "true"
+  # No tls block: the certificate is pre-shared by name above, so there is no
+  # Kubernetes TLS secret for the ingress to mount.
+  tls: []

@@ -47,13 +47,10 @@ variable "wildcard_dns_suffix" {
 }
 
 variable "placeholder_secrets" {
-  description = "Secrets created empty for values issued outside Terraform. Prefixed with the environment name."
+  description = "Secrets created empty because a third party issues them and Terraform cannot generate them. Prefixed with the environment name. Everything else is generated; see the secrets map in main.tf."
   type        = list(string)
   default = [
-    "vllm-api-key",
-    "embedding-api-key",
     "tailscale-authkey",
-    "langfuse-secret",
     "hf-token",
   ]
 }

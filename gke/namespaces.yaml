@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+# Empty in phase 1. Created so its boundaries exist before anything lands in it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp
