@@ -11,8 +11,8 @@ Manager entries. Nothing here changes any of it.
 | | |
 |---|---|
 | Chart | `oci://ghcr.io/berriai/litellm/chart/litellm` 1.96.2 |
-| Postgres | Cloud SQL `10.141.0.3`, private IP |
-| Redis | Memorystore `10.141.119.251:6379` |
+| Postgres | Cloud SQL `10.192.0.3`, private IP |
+| Redis | Memorystore `10.192.59.227:6379` |
 | Endpoint | `https://8.232.205.26.nip.io` |
 | Model backend | vLLM on a RunPod GPU pod, called on its public proxy URL |
 
@@ -97,16 +97,66 @@ gcloud compute ssl-certificates describe terraforge-dev-litellm-cert \
 ```
 
 Once it is active, set `kubernetes.io/ingress.allow-http: "false"` in
-`values.yaml` and re-run the upgrade. The UI is at `/ui`, logging in with the
-same master key.
+`values.yaml` and re-run the upgrade.
+
+## Adding the RunPod model
+
+`values.yaml` ships only `smoke-test`. The real model is added after deploying,
+from the Admin UI, and `STORE_MODEL_IN_DB` writes it to Cloud SQL encrypted with
+`LITELLM_SALT_KEY` — so it survives restarts and redeploys, and this repo never
+carries a pod id that changes whenever the pod is recreated.
+
+Reach the UI. Try the Ingress first, and fall back to a port-forward if the
+login loops (see the `/*.txt` note below):
+
+```bash
+kubectl -n llm-system port-forward svc/litellm-ui 3000:3000   # then http://localhost:3000
+```
+
+Log in with the master key:
+
+```bash
+gcloud secrets versions access latest \
+  --project trisec-lab --secret terraforge-dev-litellm-master-key
+```
+
+Then **Models → Add Model**:
+
+| Field | Value |
+|---|---|
+| Provider | OpenAI-Compatible |
+| Model name (public) | `terraform-code-fast` |
+| LiteLLM model name | `openai/<what the pod reports at GET /v1/models>` |
+| API base | `https://<POD_ID>-8000.proxy.runpod.net/v1` |
+| API key | `os.environ/VLLM_API_KEY` |
+
+Set the API key to that **literal string** rather than pasting the secret. The
+value is already in the pod environment, straight from Secret Manager, so the
+credential never passes through a browser.
+
+The same thing over the management API, if the UI is unreachable:
+
+```bash
+MASTER_KEY=$(gcloud secrets versions access latest \
+  --project trisec-lab --secret terraforge-dev-litellm-master-key)
+
+curl -X POST https://8.232.205.26.nip.io/model/new \
+  -H "Authorization: Bearer $MASTER_KEY" -H 'Content-Type: application/json' \
+  -d '{
+        "model_name": "terraform-code-fast",
+        "litellm_params": {
+          "model": "openai/<SERVED_MODEL_NAME>",
+          "api_base": "https://<POD_ID>-8000.proxy.runpod.net/v1",
+          "api_key": "os.environ/VLLM_API_KEY"
+        }
+      }'
+```
+
+Models added this way are additive to `model_list`, so `smoke-test` stays. Once
+the RunPod path is confirmed working, consider moving the model into
+`values.yaml` so the repo describes what is actually running.
 
 ## Things to know
-
-- **Two values in `values.yaml` must be filled before deploying.**
-  `<POD_ID>` is the RunPod pod id, and `<SERVED_MODEL_NAME>` is what the pod
-  reports at `GET /v1/models` — vLLM's `--served-model-name`, or the Hugging
-  Face repo id if that flag was not used. LiteLLM forwards the name verbatim and
-  vLLM rejects anything else.
 
 - **Start vLLM with the generated key.** The RunPod proxy URL is public, so
   `--api-key` is the only thing standing between the internet and your GPU.

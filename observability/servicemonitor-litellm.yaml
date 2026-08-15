@@ -1,0 +1,61 @@
+# LiteLLM's own /metrics: spend, tokens, cache hits, per-deployment health, and
+# latency split into gateway overhead vs time in the model.
+#
+# Requires `callbacks: ["prometheus"]` in the proxy config — see
+# gke/litellm/values.yaml. Without it these series do not exist at all, and the
+# Gateway dashboard is empty rather than zero.
+#
+# Lives in llm-system, not observability: the Prometheus operator resolves
+# bearerTokenSecret against the ServiceMonitor's own namespace, and the master
+# key Secret is there.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: litellm
+  namespace: llm-system
+  labels:
+    release: kube-prom-stack
+spec:
+  namespaceSelector:
+    matchNames: [llm-system]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+      app.kubernetes.io/component: gateway
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      # That endpoint requires a bearer token from LiteLLM v1.85.0 onward, and
+      # the LiteLLM chart's ingress routes /metrics publicly — so the auth is
+      # doing real work, not ceremony.
+      bearerTokenSecret:
+        name: litellm-masterkey
+        key: masterkey
+---
+# Prometheus reads the master key to authenticate its scrape. Scoped to that one
+# Secret by name rather than granting secret access across the namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-metrics-reader
+  namespace: llm-system
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["litellm-masterkey"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-metrics-reader
+  namespace: llm-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: kube-prom-stack-kube-prom-prometheus
+    namespace: observability

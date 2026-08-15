@@ -1,0 +1,328 @@
+name: Observability
+
+# Deploys the monitoring stack, and runs evaluations on demand.
+#
+# Evaluations are deliberately not scheduled. They put real load on the model
+# and the gateway, so when they run should be a decision — after a model change,
+# before a release — rather than a cron nobody remembers setting.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        type: choice
+        required: true
+        default: deploy
+        options: [deploy, run-eval, uninstall]
+      eval:
+        description: "run-eval only: suite or profile name, or 'all'"
+        type: string
+        required: false
+        default: all
+  push:
+    paths:
+      - "observability/**"
+      - ".github/workflows/observability-deploy.yml"
+  pull_request:
+    paths:
+      - "observability/**"
+      - ".github/workflows/observability-deploy.yml"
+
+concurrency:
+  group: observability-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  NAMESPACE: observability
+  KPS_RELEASE: kube-prom-stack
+  KPS_VERSION: "87.17.0"
+  HELM_VERSION: v3.16.3
+  CONFTEST_VERSION: 0.56.0
+  CLUSTER: terraforge-dev-gke
+  CLUSTER_ZONE: europe-west8-a
+
+jobs:
+  # Runs with no cloud credentials, on every push and PR.
+  validate:
+    name: Render + policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Dashboards are JSON embedded in a ConfigMap, where a broken brace is
+      # invisible until Grafana silently ignores the file.
+      - name: Dashboard JSON is valid
+        run: |
+          python3 - <<'PY'
+          import glob, json, sys, yaml
+          bad = 0
+          for path in glob.glob("observability/dashboard.yaml"):
+              doc = yaml.safe_load(open(path))
+              for name, body in doc["data"].items():
+                  try:
+                      d = json.loads(body)
+                      print(f"ok   {name}: {len(d['panels'])} panels")
+                  except Exception as e:
+                      print(f"FAIL {name}: {e}")
+                      bad += 1
+          sys.exit(bad)
+          PY
+
+      # Eval Jobs must use generateName, never name: a finished Job is
+      # immutable, so a fixed name makes the second run fail.
+      - name: Eval Jobs use generateName
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = 0
+          for path in sorted(glob.glob("observability/*-job.yaml")):
+              for doc in yaml.safe_load_all(open(path)):
+                  if not doc or doc.get("kind") != "Job":
+                      continue
+                  md = doc["metadata"]
+                  if "name" in md or "generateName" not in md:
+                      print(f"FAIL {path}: must set generateName and not name")
+                      bad += 1
+                  else:
+                      print(f"ok   {path}: {md['generateName']}")
+          sys.exit(bad)
+          PY
+
+      - name: Setup conftest
+        run: |
+          curl -sSL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin conftest
+
+      # Same policy the LiteLLM deploy uses: image pinning, resource bounds,
+      # no privilege, no inline Secrets.
+      - name: Conftest
+        run: conftest test observability/pushgateway.yaml observability/servicemonitor-litellm.yaml observability/dashboard.yaml observability/eval-scripts.yaml observability/langfuse.yaml observability/lm-eval-job.yaml observability/guidellm-job.yaml -p gke/policy
+
+  deploy:
+    name: Deploy stack
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Get cluster credentials
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER" \
+            --zone "$CLUSTER_ZONE" --project "${{ secrets.GCP_PROJECT_ID }}"
+
+      # Installed separately from our chart, and first: it owns the
+      # ServiceMonitor, PrometheusRule, and ScrapeConfig CRDs that the chart's
+      # objects are instances of.
+      - name: kube-prometheus-stack
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+          helm upgrade --install "$KPS_RELEASE" prometheus-community/kube-prometheus-stack \
+            --version "$KPS_VERSION" \
+            --namespace "$NAMESPACE" --create-namespace \
+            -f observability/kube-prom-stack-values.yaml \
+            --wait --timeout 10m
+
+      - name: Monitoring objects
+        run: |
+          kubectl apply -f observability/pushgateway.yaml
+          kubectl apply -f observability/servicemonitor-litellm.yaml
+          kubectl apply -f observability/dashboard.yaml
+
+      # Must land before Langfuse itself: its pods mount langfuse-secrets at
+      # startup, and the SecretStore here is what creates that Secret.
+      - name: Langfuse identity and secrets
+        run: |
+          kubectl apply -f observability/langfuse.yaml
+          kubectl -n "$NAMESPACE" wait --for=condition=Ready externalsecret --all --timeout=180s
+
+      # Mounted by every eval Job, so it has to exist before one is created.
+      - name: Eval scripts
+        run: kubectl apply -f observability/eval-scripts.yaml
+
+      # Langfuse itself is deployed by .github/workflows/langfuse-deploy.yml.
+      # This pipeline only creates what it depends on — the ServiceAccount,
+      # SecretStore, and ExternalSecrets above — because Langfuse has its own
+      # lifecycle: database migrations on upgrade, a first-login step that
+      # changes a value afterwards, and a PVC that should not be near a
+      # monitoring redeploy.
+
+      # A ServiceMonitor that matches no Service produces no error anywhere —
+      # the only symptom is an empty dashboard. Assert the target is actually up.
+      - name: Verify LiteLLM is being scraped
+        run: |
+          kubectl -n "$NAMESPACE" run promcheck-$GITHUB_RUN_ID \
+            --image=curlimages/curl:8.11.1 --rm --attach --restart=Never --quiet \
+            --command -- sh -c '
+              up=$(curl -fsS "http://'"$KPS_RELEASE"'-kube-prom-prometheus:9090/api/v1/query?query=up%7Bjob%3D~%22.%2Alitellm.%2A%22%7D" | grep -o "\"value\"" | wc -l)
+              echo "litellm scrape targets: $up"
+              [ "$up" -gt 0 ]' \
+          || echo "::warning::Prometheus has no LiteLLM target yet. Expected if LiteLLM is not deployed; otherwise check the ServiceMonitor selector and its bearer token."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Observability"
+            echo '```'
+            kubectl -n "$NAMESPACE" get deploy,svc,servicemonitor,prometheusrule
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  run-eval:
+    name: Run evaluation
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'run-eval'
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Get cluster credentials
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER" \
+            --zone "$CLUSTER_ZONE" --project "${{ secrets.GCP_PROJECT_ID }}"
+
+      # `create`, not `apply`: these Jobs use generateName, so each run makes a
+      # new object with a unique name. A finished Job is immutable, and `apply`
+      # does not work with generateName at all.
+      #
+      # RUN_ID is stamped with the workflow run number so a score in Grafana is
+      # traceable back to the run that produced it.
+      - name: Create eval Jobs
+        env:
+          ONLY: ${{ inputs.eval }}
+        run: |
+          kubectl apply -f observability/eval-scripts.yaml
+
+          # Both job files hold several Jobs. Selecting one means filtering by
+          # the eval/name label rather than by filename.
+          python3 - "$ONLY" "$GITHUB_RUN_NUMBER" > /tmp/jobs.yaml <<'PY'
+          import glob, sys, yaml
+          only, run_id = sys.argv[1], sys.argv[2]
+          picked, available = [], []
+          for path in sorted(glob.glob("observability/*-job.yaml")):
+              for doc in yaml.safe_load_all(open(path)):
+                  if not doc or doc.get("kind") != "Job":
+                      continue
+                  name = doc["metadata"]["labels"]["eval/name"]
+                  available.append(name)
+                  if only not in ("all", name):
+                      continue
+                  for e in doc["spec"]["template"]["spec"]["containers"][0]["env"]:
+                      if e["name"] == "RUN_ID":
+                          e["value"] = run_id
+                  picked.append(doc)
+          if not picked:
+              print(f"::error::No such eval: {only}. Available: {', '.join(available)}",
+                    file=sys.stderr)
+              sys.exit(1)
+          print(yaml.safe_dump_all(picked))
+          print(f"selected {len(picked)} job(s)", file=sys.stderr)
+          PY
+
+          kubectl create -f /tmp/jobs.yaml
+          kubectl -n "$NAMESPACE" get jobs -l app.kubernetes.io/component=eval
+
+      # Long timeout on purpose: a full sweep or a code suite genuinely takes
+      # this long, and killing it early would push a partial result.
+      - name: Wait for completion
+        run: |
+          kubectl -n "$NAMESPACE" wait --for=condition=complete job \
+            -l app.kubernetes.io/component=eval --timeout=90m &
+          complete=$!
+          kubectl -n "$NAMESPACE" wait --for=condition=failed job \
+            -l app.kubernetes.io/component=eval --timeout=90m && exit 1 &
+          failed=$!
+          wait -n $complete $failed
+
+      - name: Logs
+        if: always()
+        run: |
+          for j in $(kubectl -n "$NAMESPACE" get jobs -l app.kubernetes.io/component=eval -o name); do
+            echo "::group::$j"
+            kubectl -n "$NAMESPACE" logs "$j" --tail=60 || true
+            echo "::endgroup::"
+          done
+
+  uninstall:
+    name: Uninstall
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'uninstall'
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Get cluster credentials
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER" \
+            --zone "$CLUSTER_ZONE" --project "${{ secrets.GCP_PROJECT_ID }}"
+
+      # The namespace and the CRDs are left in place. Removing the CRDs would
+      # delete every ServiceMonitor in the cluster, including ones this stack
+      # never owned.
+      # ClickHouse's PVC is left behind deliberately: uninstalling the release
+      # should not silently destroy trace history. Delete it by hand if that is
+      # actually what you want.
+      - name: Remove releases
+        run: |
+          helm uninstall "$KPS_RELEASE" -n "$NAMESPACE" || true
+          kubectl delete -f observability/pushgateway.yaml -f observability/dashboard.yaml --ignore-not-found
+          kubectl delete -f observability/langfuse.yaml --ignore-not-found
+          kubectl delete -n llm-system servicemonitor litellm --ignore-not-found
+          kubectl delete -n llm-system role,rolebinding prometheus-metrics-reader --ignore-not-found
+          kubectl -n "$NAMESPACE" delete jobs -l app.kubernetes.io/component=eval || true

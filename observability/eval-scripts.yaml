@@ -1,0 +1,39 @@
+# The push logic for both eval kinds, mounted into the Jobs.
+#
+# Turns a tool report into Prometheus exposition text and POSTs it to the
+# Pushgateway. Shared by both Job kinds, and runnable against a saved
+# results.json outside the cluster when a schema changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eval-scripts
+  namespace: observability
+data:
+  push_lm_eval.py: "\"\"\"lm-eval results -> Prometheus exposition -> Pushgateway.\n\nKept as a real .py file rather than inline YAML so it stays readable and can be\nrun against a saved results.json without\
+    \ a cluster. The chart loads it verbatim\nwith .Files.Get, so nothing here is templated.\n\nConfigured entirely through the environment: SUITE, RUN_ID, MODEL, PUSH_URL.\n\"\"\"\n\nimport glob\nimport\
+    \ json\nimport os\nimport sys\nimport time\nimport urllib.request\n\nsuite = os.environ[\"SUITE\"]\nrun_id = os.environ[\"RUN_ID\"]\nmodel = os.environ[\"MODEL\"]\npush_url = os.environ[\"PUSH_URL\"\
+    ]\n\nmatches = sorted(glob.glob(\"/tmp/lmeval/**/results*.json\", recursive=True))\nif not matches:\n    sys.exit(\"no results file; the harness produced nothing to push\")\n\nresults = json.load(open(matches[-1]))[\"\
+    results\"]\n\nlines = [\"# TYPE lm_eval_score gauge\"]\nseen = set()\n\nfor task, metrics in results.items():\n    for key, val in metrics.items():\n        if not isinstance(val, (int, float)) or isinstance(val,\
+    \ bool):\n            continue\n        # Keys look like \"exact_match,strict-match\" -- metric,filter.\n        if \"stderr\" in key or \",\" not in key:\n            continue\n        metric, _, flt\
+    \ = key.partition(\",\")\n        # The filter MUST stay in the labels. gsm8k reports exact_match under\n        # both strict-match and flexible-extract, so dropping it produces two\n        # identical\
+    \ series and the Pushgateway rejects the whole body with a 400.\n        labels = (\n            'suite=\"%s\",task=\"%s\",metric=\"%s\",filter=\"%s\",run=\"%s\"'\n            % (suite, task, metric,\
+    \ flt, run_id)\n        )\n        if labels in seen:\n            continue\n        seen.add(labels)\n        lines.append(\"lm_eval_score{%s} %s\" % (labels, val))\n\nif len(lines) == 1:\n    sys.exit(\"\
+    no scorable metrics in results; the task names may be wrong\")\n\n# Staleness alerting needs to know when a run last happened, and a score alone\n# cannot say: the Pushgateway holds its last value forever,\
+    \ so a year-old result\n# looks exactly like a fresh one.\nlines.append(\"# TYPE lm_eval_run_timestamp_seconds gauge\")\nlines.append(\n    'lm_eval_run_timestamp_seconds{suite=\"%s\",run=\"%s\"} %d'\n\
+    \    % (suite, run_id, int(time.time()))\n)\n\nbody = \"\\n\".join(lines) + \"\\n\"\n\n# Grouping key is suite+model, so a new run of the same suite replaces the old\n# values instead of accumulating\
+    \ one stale series per run forever.\ntarget = \"%s/metrics/job/lm_eval/suite/%s/model/%s\" % (push_url, suite, model)\nreq = urllib.request.Request(target, data=body.encode(), method=\"POST\")\nprint(\"\
+    pushgateway:\", urllib.request.urlopen(req).status, \"series:\", len(lines) - 2)\nprint(body)\n"
+  push_guidellm.py: "\"\"\"GuideLLM report -> Prometheus exposition -> Pushgateway.\n\nLoaded verbatim by the chart via .Files.Get; nothing here is templated.\nConfigured through the environment: PROFILE,\
+    \ RUN_ID, MODEL, PUSH_URL.\n\"\"\"\n\nimport json\nimport os\nimport re\nimport sys\nimport time\nimport urllib.request\n\nprofile = os.environ[\"PROFILE\"]\nrun_id = os.environ[\"RUN_ID\"]\nmodel =\
+    \ os.environ[\"MODEL\"]\npush_url = os.environ[\"PUSH_URL\"]\n\n# Each metric holds successful/errored/incomplete/total buckets; \"successful\" is\n# the one worth charting. Percentiles live one level\
+    \ below that.\nSTATS = (\"mean\", \"median\", \"min\", \"max\", \"count\")\nPERCENTILES = (\"p50\", \"p95\", \"p99\")\n\n\ndef sanitize(s):\n    return re.sub(r\"[^a-z0-9_]\", \"_\", str(s).lower())[:120]\n\
+    \n\nreport = json.load(open(\"/tmp/guidellm.json\"))\nlines = [\"# TYPE guidellm_metric gauge\"]\n\n# Read straight from benchmarks[].metrics. An earlier version walked the whole\n# report for perf-looking\
+    \ numeric leaves and kept the first 100 -- but the\n# report opens with a ~50-entry echo of the run config, so the cap was spent\n# before reaching a real metric and the dashboard charted config values.\n\
+    for idx, bench in enumerate(report.get(\"benchmarks\", [])):\n    for metric, buckets in (bench.get(\"metrics\") or {}).items():\n        if not isinstance(buckets, dict):\n            continue\n  \
+    \      vals = buckets.get(\"successful\")\n        if not isinstance(vals, dict):\n            continue  # text/image/audio blocks carry no such bucket\n        emit = {s: vals.get(s) for s in STATS}\n\
+    \        pct = vals.get(\"percentiles\") or {}\n        emit.update({p: pct.get(p) for p in PERCENTILES})\n        for stat, val in emit.items():\n            if not isinstance(val, (int, float)) or\
+    \ isinstance(val, bool):\n                continue\n            labels = (\n                'profile=\"%s\",benchmark=\"%d\",metric=\"%s\",stat=\"%s\",run=\"%s\"'\n                % (profile, idx, sanitize(metric),\
+    \ stat, run_id)\n            )\n            lines.append(\"guidellm_metric{%s} %s\" % (labels, val))\n\nif len(lines) == 1:\n    sys.exit(\"no metrics in report; the schema may have changed\")\n\nlines.append(\"\
+    # TYPE guidellm_run_timestamp_seconds gauge\")\nlines.append(\n    'guidellm_run_timestamp_seconds{profile=\"%s\",run=\"%s\"} %d'\n    % (profile, run_id, int(time.time()))\n)\n\nbody = \"\\n\".join(lines)\
+    \ + \"\\n\"\n\ntarget = \"%s/metrics/job/guidellm/profile/%s/model/%s\" % (push_url, profile, model)\nreq = urllib.request.Request(target, data=body.encode(), method=\"POST\")\nprint(\"pushgateway:\"\
+    , urllib.request.urlopen(req).status, \"series:\", len(lines) - 2)\nprint(body)\n"

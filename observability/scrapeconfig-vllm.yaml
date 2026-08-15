@@ -1,0 +1,31 @@
+# vLLM's engine metrics, scraped over the public internet because that is where
+# the pod lives.
+#
+# A ScrapeConfig rather than a ServiceMonitor: there is no Service and no
+# Endpoints object for something outside the cluster.
+#
+# In optional/ because `kubectl apply -f monitoring/` is not recursive, so this
+# is skipped until you apply it by name. Fill in the RunPod host first — as
+# written it would create a scrape target that fails forever. Know the trade:
+# the pod's proxy URL is public and vLLM serves /metrics without authentication,
+# so anyone with the pod id can read your serving telemetry. Engine visibility
+# is worth having, but it is a decision, not a default.
+#
+#   kubectl apply -f observability/monitoring/optional/scrapeconfig-vllm.yaml
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: ScrapeConfig
+metadata:
+  name: vllm-runpod
+  namespace: observability
+  labels:
+    release: kube-prom-stack
+spec:
+  scheme: HTTPS
+  metricsPath: /metrics
+  scrapeInterval: 30s
+  staticConfigs:
+    # Host only, no scheme and no path — both are set above.
+    - targets: ["REPLACE-POD-ID-8000.proxy.runpod.net"]
+      labels:
+        engine: vllm
+        target: terraforge

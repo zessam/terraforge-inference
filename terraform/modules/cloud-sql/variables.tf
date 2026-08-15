@@ -87,3 +87,9 @@ variable "deletion_protection" {
   type        = bool
   default     = false
 }
+
+variable "extra_users" {
+  description = "Additional database users, one per workload needing its own credential. The primary user_name above is unaffected."
+  type        = list(string)
+  default     = []
+}

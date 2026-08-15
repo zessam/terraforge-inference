@@ -1,0 +1,181 @@
+# Langfuse — values for the upstream chart (langfuse/langfuse 1.5.41, app 3.224.1).
+#
+#   helm upgrade --install langfuse langfuse/langfuse --version 1.5.41 \
+#     -n observability -f observability/langfuse-values.yaml
+#
+# Three of Langfuse's four storage components are GCP managed services; the
+# fourth has no managed equivalent:
+#
+#   Postgres    -> Cloud SQL          (transactional data)
+#   Redis       -> Memorystore, db 1  (queue and cache)
+#   Blob store  -> GCS                (raw events, media, exports)
+#   ClickHouse  -> in-cluster         (no managed ClickHouse on GCP)
+#
+# Every credential comes from the langfuse-secrets Secret, which the
+# llm-observability chart reconciles out of Secret Manager. Nothing sensitive
+# is written here.
+
+langfuse:
+  # Created by the llm-observability chart, not here: the SecretStore that
+  # populates langfuse-secrets impersonates it, so it must not depend on this
+  # release existing.
+  serviceAccount:
+    create: false
+    name: langfuse
+
+  nextauth:
+    # MUST match the URL the browser actually uses. Langfuse builds its
+    # redirects from this, so a mismatch is not a cosmetic problem — login
+    # bounces in a loop with no useful error.
+    #
+    # Port-forward by default. To serve it through the Ingress below, change
+    # this to https://<langfuse_hostname from terraform output> at the same time
+    # as enabling the ingress, not afterwards.
+    url: http://localhost:3000
+    secret:
+      secretKeyRef:
+        name: langfuse-secrets
+        key: nextauth-secret
+
+  features:
+    # The setting that makes public exposure safe rather than reckless. Langfuse
+    # allows open sign-up by default: anyone who can load the page can create an
+    # account. Harmless behind a port-forward, not harmless on the internet.
+    #
+    # Leave false for the very first login — the first account created becomes
+    # the owner — then set it true and upgrade. Doing it in the other order
+    # locks you out of your own instance.
+    signUpDisabled: false
+    # Usage pings to Langfuse. Off: this instance holds infrastructure prompts,
+    # and there is no reason to send anything about it outward.
+    telemetryEnabled: false
+
+  # Off by default: Langfuse stores full prompt and response text, so the safe
+  # posture is port-forward. To expose it, set expose_langfuse = true in
+  # terraform.tfvars, apply, and fill the three values below from
+  # `terraform output`.
+  #
+  #   ingress:
+  #     enabled: true
+  #     className: gce
+  #     annotations:
+  #       kubernetes.io/ingress.global-static-ip-name: <langfuse_ip_name>
+  #       ingress.gcp.kubernetes.io/pre-shared-cert: <langfuse_certificate_name>
+  #       kubernetes.io/ingress.allow-http: "false"
+  #     hosts:
+  #       - host: <langfuse_hostname>
+  #         paths:
+  #           - path: /
+  #             pathType: Prefix
+  #
+  # Its own address and certificate, not a path on the LiteLLM load balancer:
+  # two GKE Ingresses cannot share one global static IP, and the LiteLLM chart's
+  # path map ends in a catch-all with no way to add routes in 1.96.2.
+  ingress:
+    enabled: false
+
+  # Hashes API keys.
+  salt:
+    secretKeyRef:
+      name: langfuse-secrets
+      key: salt
+
+  # Encrypts stored provider credentials. Same trap as LITELLM_SALT_KEY:
+  # changing it makes everything already encrypted unreadable.
+  encryptionKey:
+    secretKeyRef:
+      name: langfuse-secrets
+      key: encryption-key
+
+  web:
+    replicas: 1
+    resources:
+      requests: { cpu: 200m, memory: 1Gi }
+      limits: { cpu: "1", memory: 2Gi }
+
+  worker:
+    replicas: 1
+    resources:
+      requests: { cpu: 200m, memory: 1Gi }
+      limits: { cpu: "1", memory: 2Gi }
+
+# ---------------------------------------------------------------- Cloud SQL ---
+
+postgresql:
+  deploy: false # never run Postgres in the cluster; Cloud SQL owns it
+  host: "10.192.0.3" # terraform output database_host
+  port: 5432
+  # The instance runs ssl_mode = ENCRYPTED_ONLY and rejects plaintext. `require`
+  # encrypts without verifying the server certificate, which is what a client
+  # with no copy of the Cloud SQL CA can do.
+  args: "sslmode=require"
+  auth:
+    # Its own user, not LiteLLM's. Different workload, different rotation, and
+    # it only ever touches its own database.
+    username: langfuse
+    database: langfuse
+    existingSecret: langfuse-secrets
+    secretKeys:
+      userPasswordKey: db-password
+
+# -------------------------------------------------------------- Memorystore ---
+
+redis:
+  deploy: false
+  host: "10.192.59.227" # terraform output redis_host
+  port: 6379
+  tls:
+    enabled: false # Memorystore transit encryption is DISABLED; traffic stays in the VPC
+  auth:
+    # Deliberately empty. Memorystore AUTH is a plain `requirepass`, with no ACL
+    # user — the chart's default of "default" would build
+    # redis://default:pw@host, and an empty username gives redis://:pw@host,
+    # which is the form requirepass expects.
+    username: ""
+    existingSecret: langfuse-secrets
+    existingSecretPasswordKey: redis-password
+    # LiteLLM uses database 0 on this same instance. Separate index, so the two
+    # cannot collide on key names.
+    database: 1
+
+# --------------------------------------------------------------------- GCS ---
+
+s3:
+  deploy: false # no MinIO; GCS is the blob store
+  storageProvider: gcs
+  bucket: terraforge-dev-langfuse # terraform output langfuse_bucket
+  # gcs.credentials is deliberately left unset. The chart then omits
+  # LANGFUSE_GOOGLE_CLOUD_STORAGE_CREDENTIALS, and the Google SDK falls back to
+  # Application Default Credentials — which on GKE means Workload Identity
+  # through the langfuse service account. No key file exists.
+
+# -------------------------------------------------------------- ClickHouse ---
+
+# The one component with no managed GCP equivalent, so it runs here.
+#
+# The chart's defaults are a 3-replica cluster with a "2xlarge" resource preset
+# and ZooKeeper alongside — sensible for Langfuse Cloud, far beyond a two-node
+# e2-standard-4 cluster. A single node with explicit modest requests is what
+# actually fits, at the cost of no ClickHouse redundancy: losing that pod loses
+# trace history until it restarts, though nothing in flight, since events are
+# already durable in GCS.
+clickhouse:
+  deploy: true
+  clusterEnabled: false
+  shards: 1
+  replicaCount: 1
+  resourcesPreset: "none" # superseded by the explicit resources below
+  resources:
+    requests: { cpu: 500m, memory: 2Gi }
+    limits: { cpu: "2", memory: 4Gi }
+  auth:
+    username: default
+    existingSecret: langfuse-secrets
+    existingSecretKey: clickhouse-password
+  persistence:
+    enabled: true
+    size: 20Gi
+  # A single node has nothing to coordinate, and ZooKeeper would cost another
+  # pod and another PVC for nothing.
+  zookeeper:
+    enabled: false

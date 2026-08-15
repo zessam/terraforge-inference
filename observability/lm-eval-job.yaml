@@ -1,0 +1,323 @@
+# QUALITY — lm-eval. Four suites, one Job each, chosen for a Terraform-writing
+# agent rather than for leaderboard comparability:
+#
+#   code          humaneval + mbpp        it writes HCL and code
+#   reasoning     gsm8k + arc_challenge   multi-step planning
+#   instruction   ifeval                  must obey an output format
+#   truthfulness  truthfulqa_mc2          invented resource names are the failure mode
+#
+# `code` executes model-generated code inside the Job to score it
+# (--confirm_run_unsafe_code). Only run it against a model you are willing to
+# execute output from.
+#
+# Every Job uses generateName, so CREATE, never apply — a finished Job is
+# immutable and apply does not work with generateName at all:
+#
+#   kubectl create -n observability -f observability/lm-eval-job.yaml          # all four
+#   kubectl create -n observability -f observability/lm-eval-job.yaml --selector ...  # not supported;
+#   # to run one suite, split the doc you want out, or use the pipeline's `eval` input.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: llm-observability
+    app.kubernetes.io/component: eval
+    eval/kind: lm-eval
+    eval/name: code
+  generateName: lm-eval-code-
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: llm-observability
+        app.kubernetes.io/component: eval
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: lm-eval
+        image: python:3.11-slim
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: SUITE
+          value: code
+        - name: RUN_ID
+          value: manual
+        - name: MODEL
+          value: terraform-code-fast
+        - name: PUSH_URL
+          value: http://pushgateway.observability.svc.cluster.local:9091
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-masterkey
+              key: masterkey
+        command:
+        - bash
+        - -lc
+        args:
+        - "set -euo pipefail\n# Pinned: these eval CLIs rename flags across minors, and an\n# unpinned\
+          \ install has broken this Job before.\npip install --quiet --target /tmp/pip \\\n  \"lm-eval[api]==0.4.12\"\
+          \ transformers\nexport PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nlm_eval --model local-completions\
+          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=terraform-code-fast,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
+          \ \\\n  --tasks humaneval,mbpp \\\n  --limit 50 \\\n  --confirm_run_unsafe_code \\\n  --output_path\
+          \ /tmp/lmeval\n\npython /scripts/push_lm_eval.py\n"
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          limits:
+            cpu: '2'
+            memory: 4Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+      volumes:
+      - name: scripts
+        configMap:
+          name: eval-scripts
+      - name: tmp
+        emptyDir:
+          sizeLimit: 4Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: llm-observability
+    app.kubernetes.io/component: eval
+    eval/kind: lm-eval
+    eval/name: instruction
+  generateName: lm-eval-instruction-
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: llm-observability
+        app.kubernetes.io/component: eval
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: lm-eval
+        image: python:3.11-slim
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: SUITE
+          value: instruction
+        - name: RUN_ID
+          value: manual
+        - name: MODEL
+          value: terraform-code-fast
+        - name: PUSH_URL
+          value: http://pushgateway.observability.svc.cluster.local:9091
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-masterkey
+              key: masterkey
+        command:
+        - bash
+        - -lc
+        args:
+        - "set -euo pipefail\n# Pinned: these eval CLIs rename flags across minors, and an\n# unpinned\
+          \ install has broken this Job before.\npip install --quiet --target /tmp/pip \\\n  \"lm-eval[api]==0.4.12\"\
+          \ transformers\nexport PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nlm_eval --model local-completions\
+          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=terraform-code-fast,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
+          \ \\\n  --tasks ifeval \\\n  --limit 100 \\\n  --output_path /tmp/lmeval\n\npython /scripts/push_lm_eval.py\n"
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          limits:
+            cpu: '2'
+            memory: 4Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+      volumes:
+      - name: scripts
+        configMap:
+          name: eval-scripts
+      - name: tmp
+        emptyDir:
+          sizeLimit: 4Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: llm-observability
+    app.kubernetes.io/component: eval
+    eval/kind: lm-eval
+    eval/name: reasoning
+  generateName: lm-eval-reasoning-
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: llm-observability
+        app.kubernetes.io/component: eval
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: lm-eval
+        image: python:3.11-slim
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: SUITE
+          value: reasoning
+        - name: RUN_ID
+          value: manual
+        - name: MODEL
+          value: terraform-code-fast
+        - name: PUSH_URL
+          value: http://pushgateway.observability.svc.cluster.local:9091
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-masterkey
+              key: masterkey
+        command:
+        - bash
+        - -lc
+        args:
+        - "set -euo pipefail\n# Pinned: these eval CLIs rename flags across minors, and an\n# unpinned\
+          \ install has broken this Job before.\npip install --quiet --target /tmp/pip \\\n  \"lm-eval[api]==0.4.12\"\
+          \ transformers\nexport PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nlm_eval --model local-completions\
+          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=terraform-code-fast,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
+          \ \\\n  --tasks gsm8k,arc_challenge \\\n  --limit 100 \\\n  --output_path /tmp/lmeval\n\npython\
+          \ /scripts/push_lm_eval.py\n"
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          limits:
+            cpu: '2'
+            memory: 4Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+      volumes:
+      - name: scripts
+        configMap:
+          name: eval-scripts
+      - name: tmp
+        emptyDir:
+          sizeLimit: 4Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: llm-observability
+    app.kubernetes.io/component: eval
+    eval/kind: lm-eval
+    eval/name: truthfulness
+  generateName: lm-eval-truthfulness-
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: llm-observability
+        app.kubernetes.io/component: eval
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: lm-eval
+        image: python:3.11-slim
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: SUITE
+          value: truthfulness
+        - name: RUN_ID
+          value: manual
+        - name: MODEL
+          value: terraform-code-fast
+        - name: PUSH_URL
+          value: http://pushgateway.observability.svc.cluster.local:9091
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-masterkey
+              key: masterkey
+        command:
+        - bash
+        - -lc
+        args:
+        - "set -euo pipefail\n# Pinned: these eval CLIs rename flags across minors, and an\n# unpinned\
+          \ install has broken this Job before.\npip install --quiet --target /tmp/pip \\\n  \"lm-eval[api]==0.4.12\"\
+          \ transformers\nexport PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nlm_eval --model local-completions\
+          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=terraform-code-fast,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
+          \ \\\n  --tasks truthfulqa_mc2 \\\n  --limit 100 \\\n  --output_path /tmp/lmeval\n\npython /scripts/push_lm_eval.py\n"
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          limits:
+            cpu: '2'
+            memory: 4Gi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+      volumes:
+      - name: scripts
+        configMap:
+          name: eval-scripts
+      - name: tmp
+        emptyDir:
+          sizeLimit: 4Gi

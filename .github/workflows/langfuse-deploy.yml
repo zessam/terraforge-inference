@@ -1,0 +1,244 @@
+name: Langfuse Deploy
+
+# Langfuse has its own lifecycle, so it has its own pipeline: upgrades run
+# Postgres and ClickHouse migrations, the first login is a manual step that
+# changes a value afterwards, and its ClickHouse PVC is the one piece of state
+# here that must not be caught up in a monitoring-stack redeploy.
+#
+# Prerequisites, both from other pipelines:
+#   1. terraform apply  -> Cloud SQL langfuse db + user, GCS bucket, GSA, secrets
+#   2. Observability    -> the langfuse ServiceAccount, SecretStore, ExternalSecret
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        type: choice
+        required: true
+        default: deploy
+        options: [deploy, uninstall]
+  push:
+    paths:
+      - "observability/langfuse-values.yaml"
+      - ".github/workflows/langfuse-deploy.yml"
+  pull_request:
+    paths:
+      - "observability/langfuse-values.yaml"
+      - ".github/workflows/langfuse-deploy.yml"
+
+concurrency:
+  group: langfuse-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  NAMESPACE: observability
+  RELEASE: langfuse
+  CHART_VERSION: "1.5.41"
+  HELM_VERSION: v3.16.3
+  CONFTEST_VERSION: 0.56.0
+  CLUSTER: terraforge-dev-gke
+  CLUSTER_ZONE: europe-west8-a
+
+jobs:
+  validate:
+    name: Render + policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Render
+        run: |
+          helm repo add langfuse https://langfuse.github.io/langfuse-k8s
+          helm repo update langfuse
+          helm template "$RELEASE" langfuse/langfuse \
+            --version "$CHART_VERSION" \
+            --namespace "$NAMESPACE" \
+            -f observability/langfuse-values.yaml > rendered.yaml
+
+      # The two settings that are silently wrong rather than loudly broken.
+      # Both have cost real debugging time in deployments like this one, and
+      # neither surfaces as an error at deploy time.
+      - name: Config consistency
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+
+          docs = [d for d in yaml.safe_load_all(open("rendered.yaml")) if d]
+          env = {}
+          for d in docs:
+              if d.get("kind") == "Deployment" and d["metadata"]["name"].endswith("-web"):
+                  env = {e["name"]: e.get("value") for e in d["spec"]["template"]["spec"]["containers"][0]["env"]}
+          ingresses = [d for d in docs if d.get("kind") == "Ingress"]
+
+          fail = []
+          nextauth = env.get("NEXTAUTH_URL", "")
+
+          if ingresses:
+              hosts = [r.get("host") for i in ingresses for r in i["spec"]["rules"] if r.get("host")]
+              # Langfuse builds its redirects from NEXTAUTH_URL. Pointing it at
+              # localhost while serving on a real host sends login into a loop
+              # with no useful error anywhere.
+              if not any(h and h in nextauth for h in hosts):
+                  fail.append(
+                      f"NEXTAUTH_URL ({nextauth}) does not match any ingress host {hosts}. "
+                      "Login will redirect-loop."
+                  )
+              # Open sign-up on a public URL means anyone who loads the page can
+              # create an account. A warning, not an error: the very first login
+              # legitimately needs it false, because the first account becomes
+              # the owner.
+              if env.get("AUTH_DISABLE_SIGNUP") != "true":
+                  print("::warning::Ingress is enabled with AUTH_DISABLE_SIGNUP=false. "
+                        "Set features.signUpDisabled: true immediately after the first login.")
+          else:
+              if "localhost" not in nextauth:
+                  fail.append(
+                      f"No ingress, but NEXTAUTH_URL is {nextauth}. With port-forward "
+                      "access this must be http://localhost:3000."
+                  )
+
+          # Postgres, Redis, and blob storage are meant to be Cloud SQL,
+          # Memorystore, and GCS. A stray `deploy: true` would quietly stand up
+          # a bundled one instead, and everything would still come up healthy —
+          # just writing to the wrong place.
+          bundled = {"postgresql": "Cloud SQL", "valkey": "Memorystore", "minio": "GCS"}
+          for d in docs:
+              if d.get("kind") not in ("StatefulSet", "Deployment"):
+                  continue
+              n = d["metadata"]["name"]
+              for marker, managed in bundled.items():
+                  if marker in n:
+                      fail.append(f"{n} is bundled in-cluster; it should be {managed}")
+
+          for f in fail:
+              print(f"::error::{f}")
+          sys.exit(1 if fail else 0)
+          PY
+
+      - name: Setup conftest
+        run: |
+          curl -sSL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin conftest
+
+      - name: Conftest
+        run: conftest test rendered.yaml -p gke/policy
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Get cluster credentials
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER" \
+            --zone "$CLUSTER_ZONE" --project "${{ secrets.GCP_PROJECT_ID }}"
+
+      # Both pods mount langfuse-secrets at startup. Without it they sit in
+      # ContainerCreating and --wait burns its whole timeout before failing, so
+      # check first and fail with a useful message instead.
+      - name: Require secrets
+        run: |
+          if ! kubectl -n "$NAMESPACE" get secret langfuse-secrets >/dev/null 2>&1; then
+            echo "::error::Secret langfuse-secrets is missing. Run the Observability pipeline first — it owns the ServiceAccount, SecretStore, and ExternalSecrets."
+            kubectl -n "$NAMESPACE" get externalsecret || true
+            exit 1
+          fi
+          kubectl -n "$NAMESPACE" wait --for=condition=Ready externalsecret/langfuse-secrets --timeout=120s
+
+      # No --atomic. A rollback here would revert the application while the
+      # database migrations it just ran stay applied, which is a worse state
+      # than a failed deploy you can look at.
+      - name: Deploy
+        run: |
+          helm repo add langfuse https://langfuse.github.io/langfuse-k8s
+          helm repo update langfuse
+          helm upgrade --install "$RELEASE" langfuse/langfuse \
+            --version "$CHART_VERSION" \
+            --namespace "$NAMESPACE" \
+            -f observability/langfuse-values.yaml \
+            --wait --timeout 15m
+
+      - name: Verify
+        run: |
+          kubectl -n "$NAMESPACE" rollout status deploy/langfuse-web --timeout=5m
+          kubectl -n "$NAMESPACE" rollout status deploy/langfuse-worker --timeout=5m
+          kubectl -n "$NAMESPACE" run lfhealth-$GITHUB_RUN_ID \
+            --image=curlimages/curl:8.11.1 --rm --attach --restart=Never --quiet \
+            --command -- curl -fsS --max-time 10 http://langfuse-web:3000/api/public/health
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Langfuse ${CHART_VERSION}"
+            echo '```'
+            kubectl -n "$NAMESPACE" get deploy,statefulset,pvc -l app.kubernetes.io/name=langfuse
+            echo '```'
+            echo "UI: kubectl -n ${NAMESPACE} port-forward svc/langfuse-web 3000:3000"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  uninstall:
+    name: Uninstall
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'uninstall'
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Get cluster credentials
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER" \
+            --zone "$CLUSTER_ZONE" --project "${{ secrets.GCP_PROJECT_ID }}"
+
+      # The ClickHouse PVC and the GCS bucket are left alone. Uninstalling an
+      # application should not destroy the trace history it was holding; delete
+      # them deliberately if that is what you want.
+      - name: Remove release
+        run: |
+          helm uninstall "$RELEASE" -n "$NAMESPACE" || true
+          echo "Retained (delete by hand if intended):"
+          kubectl -n "$NAMESPACE" get pvc -l app.kubernetes.io/name=clickhouse || true

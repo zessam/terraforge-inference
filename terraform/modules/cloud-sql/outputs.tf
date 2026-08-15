@@ -21,3 +21,9 @@ output "user_password" {
   value       = random_password.user.result
   sensitive   = true
 }
+
+output "extra_user_passwords" {
+  description = "Generated passwords for extra_users, keyed by username."
+  value       = { for k, v in random_password.extra : k => v.result }
+  sensitive   = true
+}

@@ -95,6 +95,10 @@ module "cloud_sql" {
   databases  = ["litellm", "langfuse"]
   user_name  = "litellm"
 
+  # Langfuse gets its own credential rather than sharing LiteLLM's: different
+  # workload, different rotation, and it only ever touches its own database.
+  extra_users = ["langfuse"]
+
   # Private IP on the cluster VPC; the Helm chart connects to it directly.
   private_network  = module.network.network_id
   enable_public_ip = false
@@ -114,6 +118,18 @@ module "memorystore" {
   tier               = var.redis_tier
   memory_size_gb     = var.redis_memory_gb
   labels             = local.labels
+
+  # Shared by LiteLLM (rate-limit counters, router state) and Langfuse (its
+  # ingestion queue). noeviction is required by the latter: an evicted key is a
+  # dropped job, and Langfuse would lose traces silently under memory pressure.
+  # It costs LiteLLM nothing, because its keys are coordination state it can
+  # rebuild rather than a cache it needs trimmed.
+  #
+  # The two are separated by Redis database index, not by instance — LiteLLM on
+  # 0, Langfuse on 1.
+  redis_configs = {
+    "maxmemory-policy" = "noeviction"
+  }
 
   depends_on = [module.project_services, module.network]
 }
@@ -158,9 +174,66 @@ resource "random_password" "embedding_api_key" {
   special = false
 }
 
-resource "random_password" "langfuse_secret" {
+# Langfuse needs three unrelated secrets, so they are generated separately
+# rather than reusing one value: NEXTAUTH_SECRET signs session cookies, SALT
+# hashes API keys, and ENCRYPTION_KEY encrypts stored provider credentials.
+resource "random_password" "langfuse_nextauth_secret" {
   length  = 40
   special = false
+}
+
+resource "random_password" "langfuse_salt" {
+  length  = 40
+  special = false
+}
+
+# Must be exactly 64 hex characters (256 bits). random_password would give
+# alphanumerics of the right length but the wrong alphabet, and Langfuse
+# refuses to start on anything else.
+resource "random_id" "langfuse_encryption_key" {
+  byte_length = 32
+}
+
+# ClickHouse runs inside the cluster rather than as a managed service, because
+# GCP has no managed ClickHouse. Its credential is generated here anyway, so
+# every secret in the system has one origin.
+resource "random_password" "langfuse_clickhouse" {
+  length  = 32
+  special = false
+}
+
+# Object storage for Langfuse. Every incoming event is written here before
+# processing, which is what makes ingestion survive a database outage — so this
+# is required, not an optimisation.
+module "langfuse_storage" {
+  source = "./modules/storage"
+
+  project_id = var.project_id
+  name       = "${local.name}-langfuse"
+  location   = var.region
+  labels     = local.labels
+
+  writers = [module.langfuse_service_account.member]
+
+  depends_on = [module.project_services]
+}
+
+# Langfuse authenticates to GCS as this account through Workload Identity. The
+# Helm chart leaves LANGFUSE_GOOGLE_CLOUD_STORAGE_CREDENTIALS unset when no
+# credential is configured, so the SDK falls back to the metadata server and no
+# key file is ever created.
+module "langfuse_service_account" {
+  source = "./modules/service-account"
+
+  project_id   = var.project_id
+  account_id   = "${local.name}-langfuse"
+  display_name = "Langfuse tracing"
+  # Bucket access is granted per-bucket in the storage module, not project-wide.
+  project_roles = []
+
+  workload_identity_users = ["${var.observability_namespace}/langfuse"]
+
+  depends_on = [module.project_services]
 }
 
 module "secrets" {
@@ -187,7 +260,11 @@ module "secrets" {
     "${local.name}-vllm-api-key"      = "sk-${random_password.vllm_api_key.result}"
     "${local.name}-embedding-api-key" = "sk-${random_password.embedding_api_key.result}"
 
-    "${local.name}-langfuse-secret" = random_password.langfuse_secret.result
+    "${local.name}-langfuse-nextauth-secret"     = random_password.langfuse_nextauth_secret.result
+    "${local.name}-langfuse-salt"                = random_password.langfuse_salt.result
+    "${local.name}-langfuse-encryption-key"      = random_id.langfuse_encryption_key.hex
+    "${local.name}-langfuse-db-password"         = module.cloud_sql.extra_user_passwords["langfuse"]
+    "${local.name}-langfuse-clickhouse-password" = random_password.langfuse_clickhouse.result
   }
 
   # Deliberately no composed DATABASE_URL. Interpolating the sensitive password
@@ -201,7 +278,13 @@ module "secrets" {
   # generated: a Tailscale auth key and a Hugging Face token.
   placeholder_secrets = [for s in var.placeholder_secrets : "${local.name}-${s}"]
 
-  accessor_members = [module.litellm_service_account.member]
+  # Both service accounts can read every secret here. Splitting access per
+  # secret would be tighter, but the module grants per-secret bindings for the
+  # whole accessor list, and neither workload runs untrusted code.
+  accessor_members = [
+    module.litellm_service_account.member,
+    module.langfuse_service_account.member,
+  ]
 
   depends_on = [module.project_services]
 }
@@ -212,6 +295,26 @@ module "load_balancer" {
   project_id          = var.project_id
   name                = "${local.name}-litellm"
   domain              = var.domain
+  use_wildcard_dns    = var.use_wildcard_dns
+  wildcard_dns_suffix = var.wildcard_dns_suffix
+
+  depends_on = [module.project_services]
+}
+
+# A second address and certificate for the Langfuse UI.
+#
+# Not a path on the LiteLLM load balancer: two GKE Ingresses cannot share one
+# global address, and the LiteLLM chart's path map ends in a catch-all to its
+# own backend with no way to add routes in chart 1.96.2. Separate hostnames are
+# the honest way to run two web UIs here.
+module "langfuse_load_balancer" {
+  count = var.expose_langfuse ? 1 : 0
+
+  source = "./modules/load-balancer"
+
+  project_id          = var.project_id
+  name                = "${local.name}-langfuse"
+  domain              = var.langfuse_domain
   use_wildcard_dns    = var.use_wildcard_dns
   wildcard_dns_suffix = var.wildcard_dns_suffix
 

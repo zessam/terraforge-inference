@@ -1,0 +1,96 @@
+# kube-prometheus-stack values.
+#
+#   helm upgrade --install kube-prom-stack prometheus-community/kube-prometheus-stack \
+#     --version 87.17.0 -n observability --create-namespace \
+#     -f observability/kube-prom-stack-values.yaml
+#
+# Installed alongside the llm-observability chart, not by it: this owns the
+# ServiceMonitor / PrometheusRule / ScrapeConfig CRDs that the chart's objects
+# are instances of, so it has to exist first.
+
+alertmanager:
+  # On, because the chart ships PrometheusRules. Without a running Alertmanager
+  # those rules still evaluate and still show as firing in the Prometheus UI,
+  # but nothing is ever delivered — alerting that looks configured and is not.
+  #
+  # Delivery is deliberately left unconfigured: the default receiver is a null
+  # sink. Add a Slack or email receiver in alertmanagerSpec, or route via
+  # alertmanagerConfigSelector, before treating these as pages.
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: "50m", memory: "128Mi" }
+      limits: { cpu: "200m", memory: "256Mi" }
+
+prometheus:
+  prometheusSpec:
+    # 30 days, not the 2 it had. Eval results are the reason: they are pushed
+    # every few weeks at most, and the Evaluations dashboard compares runs over
+    # a month. At 2 days retention a score vanished before the next run existed
+    # to compare it against.
+    retention: 30d
+    retentionSize: 8GB
+
+    # With retention that long, an emptyDir would lose everything on any pod
+    # restart and grow until the node evicted it. A modest PVC is what makes the
+    # retention above real.
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+    # Select monitors in ALL namespaces regardless of release label. The LiteLLM
+    # ServiceMonitor lives in llm-system, not here.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    # The engine on RunPod is scraped with a ScrapeConfig, which is gated
+    # separately from ServiceMonitors and is off unless this is set.
+    scrapeConfigSelectorNilUsesHelmValues: false
+
+    resources:
+      requests: { cpu: "200m", memory: "1Gi" }
+      limits: { cpu: "1", memory: "2Gi" }
+
+grafana:
+  # Public external IP. The password is chart-generated and never committed:
+  #   kubectl get secret kube-prom-stack-grafana -n observability \
+  #     -o jsonpath="{.data.admin-password}" | base64 -d
+  #
+  # This is the weakest point in the stack — a public login page protected by
+  # one shared password. For anything beyond a lab, make it ClusterIP and reach
+  # it with `kubectl port-forward`, or put it behind IAP.
+  service:
+    type: LoadBalancer
+  grafana.ini:
+    auth.anonymous:
+      enabled: false
+    users:
+      allow_sign_up: false
+  # Auto-loads any ConfigMap labelled grafana_dashboard="1", which is how the
+  # llm-observability chart delivers its dashboards.
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits: { cpu: "500m", memory: "512Mi" }
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 472
+    fsGroup: 472
+    seccompProfile: { type: RuntimeDefault }
+
+prometheusOperator:
+  resources:
+    requests: { cpu: "100m", memory: "128Mi" }
+    limits: { cpu: "500m", memory: "256Mi" }
+
+kube-state-metrics:
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "200m", memory: "128Mi" }

@@ -1,0 +1,81 @@
+# Prometheus Pushgateway — the sink for BATCH metrics (lm-eval and GuideLLM
+# summaries). Eval Jobs finish and disappear, so they cannot be scraped; they
+# push their final numbers here and Prometheus scrapes the gateway.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pushgateway
+  namespace: observability
+  labels:
+    app: pushgateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pushgateway
+  template:
+    metadata:
+      labels:
+        app: pushgateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: pushgateway
+          image: prom/pushgateway:v1.9.0
+          ports:
+            - name: http
+              containerPort: 9091
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true # metrics are held in memory
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pushgateway
+  namespace: observability
+  labels:
+    app: pushgateway
+spec:
+  # ClusterIP on purpose. The Pushgateway has no authentication, so anything
+  # that can reach it can write any metric — including forged eval results.
+  type: ClusterIP
+  selector:
+    app: pushgateway
+  ports:
+    - name: http
+      port: 9091
+      targetPort: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pushgateway
+  namespace: observability
+  labels:
+    # The Prometheus operator only picks up monitors carrying its release
+    # label. Without this the object is simply ignored — no error anywhere,
+    # just missing data.
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app: pushgateway
+  endpoints:
+    - port: http
+      interval: 30s
+      # Keep the job/suite/model/run labels the eval Jobs set. Without this
+      # Prometheus overwrites `job` with "pushgateway" and every result
+      # collapses into one series.
+      honorLabels: true

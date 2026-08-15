@@ -1,0 +1,73 @@
+# Identity and secrets for Langfuse.
+#
+# Secret Manager holds every value; External Secrets Operator reconciles them
+# into Kubernetes. Nothing is copied by hand, and nothing sensitive is here.
+#
+# Applied before the Langfuse chart: both its pods mount langfuse-secrets at
+# startup, and the SecretStore below impersonates this ServiceAccount, so it
+# cannot belong to the release that depends on it.
+
+# Authenticates to GCS with no key file — the Langfuse chart leaves
+# LANGFUSE_GOOGLE_CLOUD_STORAGE_CREDENTIALS unset, so the SDK falls back to
+# Application Default Credentials, which on GKE is the metadata server.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: langfuse
+  namespace: observability
+  annotations:
+    iam.gke.io/gcp-service-account: terraforge-dev-langfuse@trisec-lab.iam.gserviceaccount.com
+---
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: gcp-secret-manager
+  namespace: observability
+spec:
+  provider:
+    gcpsm:
+      projectID: trisec-lab
+      auth:
+        workloadIdentity:
+          clusterProjectID: trisec-lab
+          clusterLocation: europe-west8-a # zonal cluster, so the zone
+          clusterName: terraforge-dev-gke
+          serviceAccountRef:
+            name: langfuse
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: langfuse-secrets
+  namespace: observability
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: gcp-secret-manager
+    kind: SecretStore
+  target:
+    name: langfuse-secrets
+  data:
+    # Signs session cookies. Rotating it logs everyone out; nothing worse.
+    - secretKey: nextauth-secret
+      remoteRef:
+        key: terraforge-dev-langfuse-nextauth-secret
+    # Hashes API keys. Rotating it invalidates every issued Langfuse key.
+    - secretKey: salt
+      remoteRef:
+        key: terraforge-dev-langfuse-salt
+    # Encrypts stored provider credentials. Rotating it makes them unreadable —
+    # the same trap as LITELLM_SALT_KEY.
+    - secretKey: encryption-key
+      remoteRef:
+        key: terraforge-dev-langfuse-encryption-key
+    - secretKey: db-password
+      remoteRef:
+        key: terraforge-dev-langfuse-db-password
+    # The same Memorystore instance LiteLLM uses, separated by database index.
+    - secretKey: redis-password
+      remoteRef:
+        key: terraforge-dev-redis-password
+    - secretKey: clickhouse-password
+      remoteRef:
+        key: terraforge-dev-langfuse-clickhouse-password

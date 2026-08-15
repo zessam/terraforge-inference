@@ -1,0 +1,260 @@
+name: LiteLLM Deploy
+
+# Same shape as infra-build.yml: stage 1 runs every gate with no cloud
+# credentials at all, and only what passes reaches a job that can authenticate.
+#
+# The gates run against *rendered* manifests rather than values.yaml, because a
+# chart default nobody set is still a chart default that ships.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "gke/**"
+      - ".github/workflows/litellm-deploy.yml"
+  pull_request:
+    paths:
+      - "gke/**"
+      - ".github/workflows/litellm-deploy.yml"
+
+concurrency:
+  group: litellm-${{ github.ref }}
+  cancel-in-progress: false # never cancel a running deploy
+
+# Read-only by default. id-token is what makes Workload Identity Federation
+# work, and is the reason no service-account key exists in this repo.
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+env:
+  CHART: oci://ghcr.io/berriai/litellm/chart/litellm
+  CHART_VERSION: "1.96.2"
+  ESO_CHART: oci://ghcr.io/external-secrets/charts/external-secrets
+  ESO_VERSION: "2.9.0"
+  RELEASE: litellm
+  NAMESPACE: llm-system
+  CLUSTER: terraforge-dev-gke
+  CLUSTER_ZONE: europe-west8-a
+  HELM_VERSION: v3.16.3
+  CONFTEST_VERSION: 0.56.0
+  KUBECONFORM_VERSION: 0.6.7
+
+jobs:
+  # --------------------------------------------------------------- stage 1 ---
+  # No secrets, no cloud auth. Renders once and hands the result to the gates,
+  # so every gate inspects the same bytes.
+  render:
+    name: Render manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Render chart
+        run: |
+          helm template "$RELEASE" "$CHART" \
+            --version "$CHART_VERSION" \
+            --namespace "$NAMESPACE" \
+            --values gke/litellm/values.yaml \
+            > rendered.yaml
+          # A placeholder that reaches the cluster is a gateway that 502s on
+          # every model call, so fail here instead.
+          if grep -qE '<POD_ID>|<SERVED_MODEL_NAME>' rendered.yaml; then
+            echo "::error file=gke/litellm/values.yaml::Unfilled placeholder in the model list"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rendered
+          path: rendered.yaml
+          retention-days: 1 # internal IPs and service-account emails
+
+  schema:
+    name: Schema validation (kubeconform)
+    runs-on: ubuntu-latest
+    needs: render
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: rendered
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+
+      # ExternalSecret and SecretStore are CRDs, so their schemas come from the
+      # community catalogue rather than the Kubernetes ones.
+      - name: Validate
+        run: |
+          kubeconform -strict -summary \
+            -kubernetes-version 1.31.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -ignore-missing-schemas \
+            rendered.yaml gke/namespaces.yaml gke/litellm/secrets.yaml
+
+  policy:
+    name: OPA Policy (conftest)
+    runs-on: ubuntu-latest
+    needs: render
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: rendered
+
+      - name: Setup conftest
+        run: |
+          curl -sSL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin conftest
+
+      - name: Conftest
+        run: conftest test rendered.yaml gke/namespaces.yaml gke/litellm/secrets.yaml -p gke/policy
+
+  trivy:
+    name: Trivy (Kubernetes misconfig)
+    runs-on: ubuntu-latest
+    needs: render
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: rendered
+
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy.sarif
+          exit-code: "0" # report-only; conftest is the blocking gate
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-k8s
+
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        run: |
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks detect --source . --redact --exit-code 1
+
+  # --------------------------------------------------------------- stage 2 ---
+  # The only job that can reach the cluster. Gated on every check above, on the
+  # branch, and on the `production` environment's approval rules.
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [schema, policy, trivy, gitleaks]
+    if: github.event_name != 'pull_request'
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+
+      # Short-lived federated credentials. No JSON key exists to leak or rotate.
+      # Same provider and service account as infra-build.yml, so this workflow
+      # needs no new secrets. That account is broader than a deploy strictly
+      # requires — it also builds the infrastructure — so if these two ever want
+      # separating, this is the line to change.
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WORKLOAD_PROVIDER }}
+          service_account: ${{ secrets.SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Get cluster credentials
+        env:
+          USE_GKE_GCLOUD_AUTH_PLUGIN: "True"
+        run: |
+          gcloud container clusters get-credentials "$CLUSTER" \
+            --zone "$CLUSTER_ZONE" \
+            --project "${{ secrets.GCP_PROJECT_ID }}"
+
+      - name: Namespaces
+        run: kubectl apply -f gke/namespaces.yaml
+
+      - name: External Secrets Operator
+        run: |
+          helm upgrade --install external-secrets "$ESO_CHART" \
+            --version "$ESO_VERSION" \
+            --namespace external-secrets --create-namespace \
+            --wait --timeout 5m
+
+      # The ServiceAccount, the SecretStore, and the ExternalSecrets. No
+      # credential passes through this runner: ESO reads Secret Manager itself,
+      # using Workload Identity from inside the cluster.
+      - name: Secret wiring
+        run: kubectl apply -f gke/litellm/secrets.yaml
+
+      - name: Wait for secrets to sync
+        run: |
+          if ! kubectl wait --namespace "$NAMESPACE" \
+              --for=condition=Ready externalsecret --all --timeout=180s; then
+            echo "::error::ExternalSecrets did not sync; the workloads would start without credentials"
+            kubectl -n "$NAMESPACE" get externalsecret
+            kubectl -n "$NAMESPACE" describe externalsecret
+            exit 1
+          fi
+
+      # --atomic rolls the release back if anything fails to become ready, so a
+      # bad deploy leaves the previous version serving rather than a half-
+      # applied one.
+      - name: Deploy LiteLLM
+        run: |
+          helm upgrade --install "$RELEASE" "$CHART" \
+            --version "$CHART_VERSION" \
+            --namespace "$NAMESPACE" \
+            --values gke/litellm/values.yaml \
+            --atomic --timeout 10m
+
+      # Runs inside the cluster against the gateway Service, so it proves the
+      # pods and their database and Redis connections work without depending on
+      # the load balancer, and without a master key touching the runner.
+      - name: Smoke test
+        run: |
+          kubectl -n "$NAMESPACE" run smoke-$GITHUB_RUN_ID \
+            --image=curlimages/curl:8.11.1 \
+            --rm --attach --restart=Never --quiet \
+            --command -- curl -fsS --max-time 10 \
+            "http://litellm-gateway:4000/health/readiness"
+
+      - name: Rollout summary
+        if: always()
+        run: |
+          {
+            echo "### LiteLLM ${CHART_VERSION}"
+            echo '```'
+            kubectl -n "$NAMESPACE" get deploy,hpa,ingress
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

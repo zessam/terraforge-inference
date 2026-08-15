@@ -50,7 +50,7 @@ serviceAccounts:
 
 database:
   writer:
-    host: "10.141.0.3" # Cloud SQL private IP, terraform output database_host
+    host: "10.192.0.3" # Cloud SQL private IP, terraform output database_host
     port: 5432
     dbname: litellm
     useIAMAuth: false # Cloud SQL IAM auth is unsupported; LiteLLM's IAM path is RDS-only
@@ -69,7 +69,7 @@ database:
 # rate limits and budgets count across replicas instead of per pod.
 redis:
   cluster: false # Memorystore BASIC tier is a single node, not a cluster
-  host: "10.141.119.251"
+  host: "10.192.59.227"
   port: 6379
   passwordSecret:
     name: litellm-redis
@@ -87,6 +87,9 @@ migrationJob:
     requests:
       cpu: 100m
       memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 
 # ---------------------------------------------------------------- gateway ---
 
@@ -107,36 +110,21 @@ gateway:
   config:
     create: true
     proxy_config:
+      # The RunPod models are added from the Admin UI after this deploys, not
+      # listed here. STORE_MODEL_IN_DB below writes them to Cloud SQL, encrypted
+      # with LITELLM_SALT_KEY, so they survive restarts and redeploys — and this
+      # file never has to carry a pod id that changes when the pod is recreated.
+      #
+      # In the UI, set the API key to the literal string os.environ/VLLM_API_KEY
+      # rather than pasting a secret: the value is already in the pod
+      # environment, straight from Secret Manager.
+      #
+      # Models added this way are additive to whatever is listed below.
       model_list:
-        # One vLLM pod on RunPod, reached on its public proxy URL. Task-based
-        # aliases so client code never names a real model — swapping the pod or
-        # the model is an edit here, not a change in every caller.
-        #
-        # FILL IN before deploying: <POD_ID> is the RunPod pod id, and
-        # <SERVED_MODEL_NAME> is what the pod reports at GET /v1/models — the
-        # value of vLLM's --served-model-name, or the Hugging Face repo id if
-        # that flag was not used. LiteLLM sends it verbatim and vLLM rejects
-        # anything else.
-        #
-        # The `openai/` prefix selects LiteLLM's OpenAI-compatible client; it is
-        # not a claim that the model is an OpenAI one.
-        - model_name: terraform-code-fast
-          litellm_params: &vllm
-            model: openai/<SERVED_MODEL_NAME>
-            api_base: https://<POD_ID>-8000.proxy.runpod.net/v1
-            api_key: os.environ/VLLM_API_KEY
-
-        # Same backend for now, separate names so per-key model allowlists and
-        # budgets can be drawn per task, and so a second pod can take one over
-        # later without touching callers.
-        - model_name: terraform-rag-answer
-          litellm_params: *vllm
-        - model_name: terraform-review
-          litellm_params: *vllm
-
-        # Answers a real completion without touching RunPod, so the gateway,
-        # Ingress, Cloud SQL, and Redis can be verified on their own. Drop it
-        # once the RunPod path is confirmed working.
+        # The proxy will not start on an empty model_list, so one entry has to
+        # stay. This one answers a real completion without touching RunPod,
+        # which makes it a useful check that the gateway, Ingress, Cloud SQL,
+        # and Redis all work on their own.
         - model_name: smoke-test
           litellm_params:
             model: openai/fake
@@ -146,6 +134,34 @@ gateway:
         # vLLM rejects OpenAI parameters it does not implement. Dropping them
         # keeps an unmodified OpenAI SDK client working against a local backend.
         drop_params: true
+
+        # Emits /metrics: spend, tokens, cache hits, per-deployment health, and
+        # latency split into gateway overhead vs time in the model. Open source,
+        # no enterprise licence. Without this the observability chart's Gateway
+        # dashboard is empty and its alerts never fire, because the series do
+        # not exist rather than being zero.
+        #
+        # Auth on that endpoint is left at its default (required, since
+        # v1.85.0), because the chart's ingress routes /metrics publicly. The
+        # ServiceMonitor authenticates with the master key.
+        # "otel" exports per-request traces over OTLP. Langfuse ingests OTLP
+        # directly at /api/public/otel, so this is the whole tracing
+        # integration — one standard protocol instead of a vendor-specific
+        # callback, which also means swapping Langfuse for any other OTLP
+        # backend later is an endpoint change, not a code change.
+        #
+        # Uncomment together with the OTEL_* entries in secrets.yaml. The auth
+        # header is base64(public_key:secret_key), and those keys are issued by
+        # the Langfuse UI on first login — not by Terraform. Enabling the
+        # callback before the credentials exist stops the proxy from starting.
+        callbacks: ["prometheus"]
+        # callbacks: ["prometheus", "otel"]
+
+      # Health of the things the proxy depends on rather than the proxy itself:
+      # Redis and Postgres latency and failure counts. Worth having because a
+      # slow Cloud SQL shows up here as a cause, while the gateway dashboard
+      # only shows it as an effect.
+      service_callback: ["prometheus_system"]
       # No general_settings.master_key: the chart injects LITELLM_MASTER_KEY as
       # an env var, which the proxy reads natively.
 

@@ -134,3 +134,24 @@ resource "google_sql_user" "this" {
   instance = google_sql_database_instance.this.name
   password = random_password.user.result
 }
+
+# Additional application users, one per workload that needs its own credential.
+#
+# A separate resource rather than folding var.user_name into a for_each: making
+# the existing single user part of a keyed set would destroy and recreate it,
+# rotating the password LiteLLM is already connected with.
+resource "random_password" "extra" {
+  for_each = toset(var.extra_users)
+
+  length  = 32
+  special = false
+}
+
+resource "google_sql_user" "extra" {
+  for_each = toset(var.extra_users)
+
+  name     = each.value
+  project  = var.project_id
+  instance = google_sql_database_instance.this.name
+  password = random_password.extra[each.value].result
+}

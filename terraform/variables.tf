@@ -108,3 +108,21 @@ variable "litellm_ksa" {
   type        = string
   default     = "litellm"
 }
+
+variable "observability_namespace" {
+  description = "Kubernetes namespace the observability stack runs in, for Langfuse's Workload Identity binding."
+  type        = string
+  default     = "observability"
+}
+
+variable "expose_langfuse" {
+  description = "Reserve a static IP and managed certificate so the Langfuse UI can be served through a GKE Ingress. Off means the UI is reachable only by port-forward, which is the safer default: Langfuse stores full prompt and response text."
+  type        = bool
+  default     = false
+}
+
+variable "langfuse_domain" {
+  description = "Real domain for the Langfuse UI. Empty falls back to wildcard DNS, the same way the LiteLLM endpoint does."
+  type        = string
+  default     = ""
+}

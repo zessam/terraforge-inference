@@ -52,3 +52,9 @@ variable "labels" {
   type    = map(string)
   default = {}
 }
+
+variable "redis_configs" {
+  description = "Instance-wide Redis parameters. Langfuse requires maxmemory-policy = noeviction, since its ingestion queue lives in Redis and evicting a key loses a job."
+  type        = map(string)
+  default     = {}
+}

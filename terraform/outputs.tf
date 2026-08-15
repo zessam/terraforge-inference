@@ -81,3 +81,33 @@ output "secrets_to_fill" {
   description = "Secrets created empty. Add a version to each before deploying."
   value       = module.secrets.empty_secret_ids
 }
+
+output "langfuse_bucket" {
+  description = "Helm values: s3.bucket for the Langfuse chart."
+  value       = module.langfuse_storage.name
+}
+
+output "langfuse_gsa_email" {
+  description = "Annotate the langfuse KSA with iam.gke.io/gcp-service-account = this."
+  value       = module.langfuse_service_account.email
+}
+
+output "langfuse_endpoint" {
+  description = "Base URL for the Langfuse UI. Empty unless expose_langfuse is true."
+  value       = try(module.langfuse_load_balancer[0].endpoint, "")
+}
+
+output "langfuse_hostname" {
+  description = "Helm values: langfuse.ingress.hosts[0].host, and langfuse.nextauth.url must match it."
+  value       = try(module.langfuse_load_balancer[0].hostname, "")
+}
+
+output "langfuse_ip_name" {
+  description = "Ingress annotation: kubernetes.io/ingress.global-static-ip-name"
+  value       = try(module.langfuse_load_balancer[0].address_name, "")
+}
+
+output "langfuse_certificate_name" {
+  description = "Ingress annotation: ingress.gcp.kubernetes.io/pre-shared-cert"
+  value       = try(module.langfuse_load_balancer[0].certificate_name, "")
+}
