@@ -121,10 +121,29 @@ gateway:
       #
       # Models added this way are additive to whatever is listed below.
       model_list:
-        # The proxy will not start on an empty model_list, so one entry has to
-        # stay. This one answers a real completion without touching RunPod,
-        # which makes it a useful check that the gateway, Ingress, Cloud SQL,
-        # and Redis all work on their own.
+        # Qwen3-8B on a RunPod GPU pod, reached on its public proxy URL.
+        # max_model_len is 8128, so prompt + completion must stay under that.
+        #
+        # Task-based aliases rather than the model id, so client code never
+        # names a real model: swapping the pod or the model is an edit here,
+        # not a change in every caller.
+        - model_name: terraform-code-fast
+          litellm_params: &vllm
+            model: openai/Qwen/Qwen3-8B # exactly what GET /v1/models reports
+            api_base: https://3hwmex5jg9hyql-8000.proxy.runpod.net/v1
+            api_key: os.environ/VLLM_API_KEY
+
+        # Same backend for now, separate names so per-key model allowlists and
+        # budgets can be drawn per task, and so a second pod can take one of
+        # them over later without touching callers.
+        - model_name: terraform-rag-answer
+          litellm_params: *vllm
+        - model_name: terraform-review
+          litellm_params: *vllm
+
+        # Answers a real completion without touching RunPod, which makes it a
+        # useful check that the gateway, Ingress, Cloud SQL, and Redis all work
+        # on their own. Drop it once the RunPod path is proven.
         - model_name: smoke-test
           litellm_params:
             model: openai/fake
