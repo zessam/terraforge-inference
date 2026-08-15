@@ -126,6 +126,15 @@ resource "google_sql_database" "this" {
   name     = each.value
   project  = var.project_id
   instance = google_sql_database_instance.this.name
+
+  # Let the instance take the databases with it on destroy.
+  #
+  # Without this, teardown deadlocks once anything has actually used the
+  # database: Terraform tries to DROP DATABASE while sessions are still open
+  # ("is being accessed by other users"), and the destroy fails before it ever
+  # reaches the instance. The database has no life independent of the instance
+  # here, so deleting it separately buys nothing and costs a stuck teardown.
+  deletion_policy = "ABANDON"
 }
 
 resource "google_sql_user" "this" {
@@ -133,6 +142,13 @@ resource "google_sql_user" "this" {
   project  = var.project_id
   instance = google_sql_database_instance.this.name
   password = random_password.user.result
+
+  # Same reason as the database above, and a sharper one: after a migration has
+  # run, this role OWNS every table it created, and Postgres refuses to drop a
+  # role that owns objects ("cannot be dropped because some objects depend on
+  # it"). Dropping the user would require REASSIGN OWNED first. Deleting the
+  # instance handles all of it.
+  deletion_policy = "ABANDON"
 }
 
 # Additional application users, one per workload that needs its own credential.
@@ -154,4 +170,6 @@ resource "google_sql_user" "extra" {
   project  = var.project_id
   instance = google_sql_database_instance.this.name
   password = random_password.extra[each.value].result
+
+  deletion_policy = "ABANDON"
 }
