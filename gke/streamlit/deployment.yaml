@@ -1,0 +1,98 @@
+# Streamlit chat UI for the LiteLLM gateway.
+#
+# In llm-system rather than its own namespace, so it can reach the gateway on
+# its in-cluster Service name and read the master key from the Secret that
+# External Secrets Operator already maintains there.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: streamlit
+  namespace: llm-system
+  labels:
+    app.kubernetes.io/name: streamlit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: streamlit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: streamlit
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: streamlit
+          # Substituted by the deploy pipeline with the digest it just pushed,
+          # so what runs is the exact bytes that were built. Not ":latest" —
+          # a moving tag makes a rollback a guess, and gke/policy rejects it.
+          image: europe-west8-docker.pkg.dev/trisec-lab/terraforge-dev/streamlit-chat:BUILD_PLACEHOLDER
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - name: http
+              containerPort: 8501
+          env:
+            # In-cluster address: the browser never talks to the gateway, this
+            # pod does, so the LoadBalancer IP is irrelevant here.
+            - name: LITELLM_BASE_URL
+              value: http://litellm-gateway:4000
+            - name: DEFAULT_MODEL
+              value: terraform-code-fast
+            # The master key, which can call every model. Swap for a virtual key
+            # with a model allowlist and a budget once one exists — this app is
+            # the most exposed thing in the system.
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-masterkey
+                  key: masterkey
+          volumeMounts:
+            # readOnlyRootFilesystem needs somewhere to write: Streamlit keeps
+            # its config and cache under $HOME.
+            - name: home
+              mountPath: /home/app
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet: { path: /_stcore/health, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /_stcore/health, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: home
+          emptyDir: { sizeLimit: 256Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: streamlit
+  namespace: llm-system
+  labels:
+    app.kubernetes.io/name: streamlit
+spec:
+  # Its own external IP, like the LiteLLM services. HTTP only — this page sends
+  # prompts and shows completions in clear text, and it holds no login of its
+  # own, so anyone with the IP can spend your model budget. Fine while
+  # building; put auth in front of it before it stays up.
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: streamlit
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
