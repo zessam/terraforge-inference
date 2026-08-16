@@ -130,7 +130,7 @@ gateway:
         - model_name: terraform-code-fast
           litellm_params: &vllm
             model: openai/Qwen/Qwen3-8B # exactly what GET /v1/models reports
-            api_base: https://3hwmex5jg9hyql-8000.proxy.runpod.net/v1
+            api_base: https://3xtpddqqdvxrzh-8000.proxy.runpod.net/v1
             api_key: os.environ/VLLM_API_KEY
 
         # Same backend for now, separate names so per-key model allowlists and
