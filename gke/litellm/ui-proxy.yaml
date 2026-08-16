@@ -1,0 +1,164 @@
+# The front door the litellm-ui image expects but the chart does not ship.
+#
+# That image is a static nginx whose config ends in `location / { return 404; }`,
+# and its own comment says a reverse proxy in front is responsible for routing
+# the API surface to gateway/backend. With ingress.enabled=false and three
+# ClusterIP Services, nothing did — so a browser pointed straight at litellm-ui
+# got nginx's HTML 404 page for every API call and the dashboard died on
+# `JSON.parse: unexpected character at line 1 column 1 of the JSON data`.
+#
+# This runs inside the cluster, so it addresses the Services by name through
+# kube-DNS. One origin, one port-forward:
+#
+#   kubectl -n llm-system port-forward svc/litellm-proxy 8080:80
+#   open http://localhost:8080/ui
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-proxy
+  namespace: llm-system
+data:
+  default.conf: |
+    # Resolved per request through kube-DNS rather than once at startup: a
+    # `helm uninstall`/`install` cycle gives the Services new ClusterIPs, and a
+    # literal upstream would pin nginx to the dead ones until it was restarted.
+    # proxy_pass with a variable forces re-resolution, and needs $request_uri
+    # spelled out because the variable form drops the original URI.
+    resolver kube-dns.kube-system.svc.cluster.local valid=10s ipv6=off;
+
+    server {
+      listen 8080;
+      server_name _;
+
+      # LLM request bodies are not small, and the default is 1m.
+      client_max_body_size 25m;
+
+      set $ui      http://litellm-ui.llm-system.svc.cluster.local:3000;
+      set $gateway http://litellm-gateway.llm-system.svc.cluster.local:4000;
+      set $backend http://litellm-backend.llm-system.svc.cluster.local:4001;
+
+      proxy_http_version 1.1;
+      proxy_set_header Host              $host;
+      proxy_set_header X-Real-IP         $remote_addr;
+      proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+
+      # Liveness for this pod itself, answered without touching an upstream.
+      location = /healthz {
+        default_type text/plain;
+        return 200 "ok\n";
+      }
+
+      # Next.js App Router (output: "export") emits an RSC flight payload as
+      # <route>.txt beside <route>.html. The client router fetches these on soft
+      # navigation; if they 404 the login flow never settles and spins between
+      # / and /ui/login. Regex locations win over prefix ones, so this is
+      # matched before anything below.
+      location ~ \.txt$ {
+        proxy_pass $ui$request_uri;
+      }
+
+      # The static bundle.
+      location /ui                    { proxy_pass $ui$request_uri; }
+      location /_next/                { proxy_pass $ui$request_uri; }
+      location /litellm-asset-prefix/ { proxy_pass $ui$request_uri; }
+      location /assets/               { proxy_pass $ui$request_uri; }
+      location = /favicon.ico         { proxy_pass $ui$request_uri; }
+
+      # The LLM API. Buffering off so token streaming reaches the client as it
+      # is produced rather than in one block at the end.
+      location /v1/ {
+        proxy_pass $gateway$request_uri;
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+      }
+
+      # Everything else is the management API the dashboard talks to:
+      # /.well-known/litellm-ui-config, /get/*, /key/*, /user/*, /model/*,
+      # /team/*. Default rather than enumerated, because that surface grows
+      # with every LiteLLM release and a missed path returns HTML again.
+      location / {
+        proxy_pass $backend$request_uri;
+        proxy_read_timeout 120s;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-proxy
+  namespace: llm-system
+  labels:
+    app: litellm-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm-proxy
+  template:
+    metadata:
+      labels:
+        app: litellm-proxy
+    spec:
+      # Routes public traffic only; it has no reason to hold a token.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101 # nginx user in the -alpine image
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: run
+              mountPath: /tmp
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: litellm-proxy
+        # readOnlyRootFilesystem, so nginx's scratch paths need to be writable.
+        - name: cache
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-proxy
+  namespace: llm-system
+spec:
+  type: ClusterIP
+  selector:
+    app: litellm-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

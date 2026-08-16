@@ -130,7 +130,7 @@ gateway:
         - model_name: terraform-code-fast
           litellm_params: &vllm
             model: openai/Qwen/Qwen3-8B # exactly what GET /v1/models reports
-            api_base: https://3xtpddqqdvxrzh-8000.proxy.runpod.net/v1
+            api_base: https://srucekf6oyn11q-8000.proxy.runpod.net/v1
             api_key: os.environ/VLLM_API_KEY
 
         # Same backend for now, separate names so per-key model allowlists and
@@ -293,15 +293,17 @@ ui:
     type: ClusterIP
     port: 3000
 
-  # Where the browser reaches the management API. This is a browser-side URL, so
-  # it must be the external ingress host, not an in-cluster Service name.
-  # Where the BROWSER reaches the backend, not where the pod does. With both
-  # Services port-forwarded that is localhost, and it needs no deploy-read-
-  # IP-redeploy round trip:
+  # Inert in this image: it reaches the pod as LITELLM_BACKEND_URL, but the UI
+  # is a pre-built static export and the value appears nowhere in the bundle
+  # (grep /usr/share/nginx/html). The dashboard calls the API same-origin
+  # instead, which is why ui-proxy.yaml exists — see the note there. Left set
+  # so the rendered manifest matches the chart's expectations, not because the
+  # browser honours it.
   #
-  #   kubectl -n llm-system port-forward svc/litellm-ui 3000:3000 &
-  #   kubectl -n llm-system port-forward svc/litellm-backend 4001:4001 &
-  #   open http://localhost:3000
+  # Reach the UI through the proxy, which needs exactly one port-forward:
+  #
+  #   kubectl -n llm-system port-forward svc/litellm-proxy 8080:80
+  #   open http://localhost:8080/ui
   backendUrl: "http://localhost:4001"
 
   # A static nginx serving a pre-built bundle. It needs almost nothing.

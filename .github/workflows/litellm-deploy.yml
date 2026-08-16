@@ -99,7 +99,7 @@ jobs:
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             -ignore-missing-schemas \
-            rendered.yaml gke/namespaces.yaml gke/litellm/secrets.yaml
+            rendered.yaml gke/namespaces.yaml gke/litellm/secrets.yaml gke/litellm/ui-proxy.yaml
 
   policy:
     name: OPA Policy (conftest)
@@ -118,7 +118,7 @@ jobs:
             | sudo tar -xz -C /usr/local/bin conftest
 
       - name: Conftest
-        run: conftest test rendered.yaml gke/namespaces.yaml gke/litellm/secrets.yaml -p gke/policy
+        run: conftest test rendered.yaml gke/namespaces.yaml gke/litellm/secrets.yaml gke/litellm/ui-proxy.yaml -p gke/policy
 
   trivy:
     name: Trivy (Kubernetes misconfig)
@@ -216,6 +216,15 @@ jobs:
       # using Workload Identity from inside the cluster.
       - name: Secret wiring
         run: kubectl apply -f gke/litellm/secrets.yaml
+
+      # The front door the chart does not ship. The litellm-ui image is a static
+      # nginx ending in `location / { return 404; }` and expects a reverse proxy
+      # to route the API surface to gateway/backend; without one the dashboard's
+      # calls come back as HTML and it dies on JSON.parse. Applied outside the
+      # release because it fronts all three Services, so it must outlive any one
+      # of them.
+      - name: UI reverse proxy
+        run: kubectl apply -f gke/litellm/ui-proxy.yaml
 
       - name: Wait for secrets to sync
         run: |

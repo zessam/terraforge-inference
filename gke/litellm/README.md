@@ -106,12 +106,17 @@ from the Admin UI, and `STORE_MODEL_IN_DB` writes it to Cloud SQL encrypted with
 `LITELLM_SALT_KEY` — so it survives restarts and redeploys, and this repo never
 carries a pod id that changes whenever the pod is recreated.
 
-Reach the UI. Try the Ingress first, and fall back to a port-forward if the
-login loops (see the `/*.txt` note below):
+Reach the UI through `litellm-proxy` (`ui-proxy.yaml`), which is the single
+origin serving both the dashboard and the API it calls. One port-forward:
 
 ```bash
-kubectl -n llm-system port-forward svc/litellm-ui 3000:3000   # then http://localhost:3000
+kubectl -n llm-system port-forward svc/litellm-proxy 8080:80   # then http://localhost:8080/ui
 ```
+
+Note the `/ui` path. Port-forwarding `svc/litellm-ui` directly does **not**
+work: that image is a static nginx ending in `location / { return 404; }`, so
+every API call returns an HTML error page and the dashboard fails with
+`JSON.parse: unexpected character at line 1 column 1 of the JSON data`.
 
 Log in with the master key:
 

@@ -25,7 +25,7 @@ spec:
   scrapeInterval: 30s
   staticConfigs:
     # Host only, no scheme and no path — both are set above.
-    - targets: ["3xtpddqqdvxrzh-8000.proxy.runpod.net"]
+    - targets: ["srucekf6oyn11q-8000.proxy.runpod.net"]
       labels:
         engine: vllm
         target: terraforge
