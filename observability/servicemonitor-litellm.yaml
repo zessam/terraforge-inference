@@ -56,6 +56,12 @@ roleRef:
   kind: Role
   name: prometheus-metrics-reader
 subjects:
+  # "kube-prome", not "kube-prom": the chart truncates its own name to 10
+  # characters when building this, so the ServiceAccount is
+  # <release>-kube-prome-prometheus. Verify against a rendered chart rather than
+  # guessing — a wrong name here binds nothing, Prometheus cannot read the
+  # bearer token, and the LiteLLM scrape fails with an empty dashboard instead
+  # of an error anyone notices.
   - kind: ServiceAccount
-    name: kube-prom-stack-kube-prom-prometheus
+    name: kube-prom-stack-kube-prome-prometheus
     namespace: observability

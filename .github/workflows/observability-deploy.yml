@@ -171,12 +171,20 @@ jobs:
 
       # A ServiceMonitor that matches no Service produces no error anywhere —
       # the only symptom is an empty dashboard. Assert the target is actually up.
+      # The Service is <release>-kube-prome-prometheus — "kube-prome", because
+      # the chart truncates its own name to 10 characters. Resolved from the
+      # cluster rather than spelled out, so a chart rename cannot turn this into
+      # a silent warning that always fires.
       - name: Verify LiteLLM is being scraped
         run: |
+          PROM_SVC="$(kubectl -n "$NAMESPACE" get svc \
+            -l app=kube-prometheus-stack-prometheus \
+            -o jsonpath='{.items[0].metadata.name}')"
+          echo "prometheus service: $PROM_SVC"
           kubectl -n "$NAMESPACE" run promcheck-$GITHUB_RUN_ID \
             --image=curlimages/curl:8.11.1 --rm --attach --restart=Never --quiet \
             --command -- sh -c '
-              up=$(curl -fsS "http://'"$KPS_RELEASE"'-kube-prom-prometheus:9090/api/v1/query?query=up%7Bjob%3D~%22.%2Alitellm.%2A%22%7D" | grep -o "\"value\"" | wc -l)
+              up=$(curl -fsS "http://'"$PROM_SVC"':9090/api/v1/query?query=up%7Bjob%3D~%22.%2Alitellm.%2A%22%7D" | grep -o "\"value\"" | wc -l)
               echo "litellm scrape targets: $up"
               [ "$up" -gt 0 ]' \
           || echo "::warning::Prometheus has no LiteLLM target yet. Expected if LiteLLM is not deployed; otherwise check the ServiceMonitor selector and its bearer token."
