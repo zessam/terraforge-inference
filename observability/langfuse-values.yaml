@@ -103,7 +103,7 @@ langfuse:
 
 postgresql:
   deploy: false # never run Postgres in the cluster; Cloud SQL owns it
-  host: "10.192.0.3" # terraform output database_host
+  host: "10.183.0.3" # terraform output database_host
   port: 5432
   # The instance runs ssl_mode = ENCRYPTED_ONLY and rejects plaintext. `require`
   # encrypts without verifying the server certificate, which is what a client
@@ -122,7 +122,7 @@ postgresql:
 
 redis:
   deploy: false
-  host: "10.192.59.227" # terraform output redis_host
+  host: "10.183.117.219" # terraform output redis_host
   port: 6379
   tls:
     enabled: false # Memorystore transit encryption is DISABLED; traffic stays in the VPC

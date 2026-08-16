@@ -11,8 +11,8 @@ Manager entries. Nothing here changes any of it.
 | | |
 |---|---|
 | Chart | `oci://ghcr.io/berriai/litellm/chart/litellm` 1.96.2 |
-| Postgres | Cloud SQL `10.192.0.3`, private IP |
-| Redis | Memorystore `10.192.59.227:6379` |
+| Postgres | Cloud SQL `10.183.0.3`, private IP |
+| Redis | Memorystore `10.183.117.219:6379` |
 | Endpoint | `https://8.232.205.26.nip.io` |
 | Model backend | vLLM on a RunPod GPU pod, called on its public proxy URL |
 

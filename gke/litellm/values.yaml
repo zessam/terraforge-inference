@@ -50,7 +50,7 @@ serviceAccounts:
 
 database:
   writer:
-    host: "10.192.0.3" # Cloud SQL private IP, terraform output database_host
+    host: "10.183.0.3" # Cloud SQL private IP, terraform output database_host
     port: 5432
     dbname: litellm
     useIAMAuth: false # Cloud SQL IAM auth is unsupported; LiteLLM's IAM path is RDS-only
@@ -69,7 +69,7 @@ database:
 # rate limits and budgets count across replicas instead of per pod.
 redis:
   cluster: false # Memorystore BASIC tier is a single node, not a cluster
-  host: "10.192.59.227"
+  host: "10.183.117.219" # terraform output redis_host
   port: 6379
   passwordSecret:
     name: litellm-redis
