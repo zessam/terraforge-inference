@@ -37,3 +37,28 @@ data:
     # TYPE guidellm_run_timestamp_seconds gauge\")\nlines.append(\n    'guidellm_run_timestamp_seconds{profile=\"%s\",run=\"%s\"} %d'\n    % (profile, run_id, int(time.time()))\n)\n\nbody = \"\\n\".join(lines)\
     \ + \"\\n\"\n\ntarget = \"%s/metrics/job/guidellm/profile/%s/model/%s\" % (push_url, profile, model.replace(\"/\", \"_\"))\nreq = urllib.request.Request(target, data=body.encode(), method=\"POST\")\nprint(\"pushgateway:\"\
     , urllib.request.urlopen(req).status, \"series:\", len(lines) - 2)\nprint(body)\n"
+---
+# The eval Jobs authenticate to LiteLLM with the master key, and Secrets do not
+# cross namespaces: ESO maintains litellm-masterkey in llm-system, but the Jobs
+# run here. Sync a second copy into observability rather than trying to reach
+# across, which Kubernetes has no way to express.
+#
+# Uses the SecretStore that langfuse.yaml creates in this namespace. Terraform
+# grants that service account secretAccessor on every secret in the project
+# (see accessor_members in terraform/main.tf), this one included.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: litellm-masterkey
+  namespace: observability
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: gcp-secret-manager
+    kind: SecretStore
+  target:
+    name: litellm-masterkey
+  data:
+    - secretKey: masterkey
+      remoteRef:
+        key: terraforge-dev-litellm-master-key

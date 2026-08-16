@@ -241,6 +241,13 @@ jobs:
         run: |
           kubectl apply -f observability/eval-scripts.yaml
 
+          # The Jobs mount litellm-masterkey, which ESO creates from the
+          # ExternalSecret applied just above. On a first run that Secret does
+          # not exist yet, and a Job scheduled before it lands fails outright
+          # with `secret "litellm-masterkey" not found` rather than retrying.
+          kubectl wait --namespace "$NAMESPACE" \
+            --for=condition=Ready externalsecret/litellm-masterkey --timeout=120s
+
           # Both job files hold several Jobs. Selecting one means filtering by
           # the eval/name label rather than by filename.
           python3 - "$ONLY" "$GITHUB_RUN_NUMBER" > /tmp/jobs.yaml <<'PY'
