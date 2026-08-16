@@ -21,7 +21,7 @@ data:
     no scorable metrics in results; the task names may be wrong\")\n\n# Staleness alerting needs to know when a run last happened, and a score alone\n# cannot say: the Pushgateway holds its last value forever,\
     \ so a year-old result\n# looks exactly like a fresh one.\nlines.append(\"# TYPE lm_eval_run_timestamp_seconds gauge\")\nlines.append(\n    'lm_eval_run_timestamp_seconds{suite=\"%s\",run=\"%s\"} %d'\n\
     \    % (suite, run_id, int(time.time()))\n)\n\nbody = \"\\n\".join(lines) + \"\\n\"\n\n# Grouping key is suite+model, so a new run of the same suite replaces the old\n# values instead of accumulating\
-    \ one stale series per run forever.\ntarget = \"%s/metrics/job/lm_eval/suite/%s/model/%s\" % (push_url, suite, model)\nreq = urllib.request.Request(target, data=body.encode(), method=\"POST\")\nprint(\"\
+    \ one stale series per run forever.\ntarget = \"%s/metrics/job/lm_eval/suite/%s/model/%s\" % (push_url, suite, model.replace(\"/\", \"_\"))\nreq = urllib.request.Request(target, data=body.encode(), method=\"POST\")\nprint(\"\
     pushgateway:\", urllib.request.urlopen(req).status, \"series:\", len(lines) - 2)\nprint(body)\n"
   push_guidellm.py: "\"\"\"GuideLLM report -> Prometheus exposition -> Pushgateway.\n\nLoaded verbatim by the chart via .Files.Get; nothing here is templated.\nConfigured through the environment: PROFILE,\
     \ RUN_ID, MODEL, PUSH_URL.\n\"\"\"\n\nimport json\nimport os\nimport re\nimport sys\nimport time\nimport urllib.request\n\nprofile = os.environ[\"PROFILE\"]\nrun_id = os.environ[\"RUN_ID\"]\nmodel =\
@@ -35,5 +35,5 @@ data:
     \ isinstance(val, bool):\n                continue\n            labels = (\n                'profile=\"%s\",benchmark=\"%d\",metric=\"%s\",stat=\"%s\",run=\"%s\"'\n                % (profile, idx, sanitize(metric),\
     \ stat, run_id)\n            )\n            lines.append(\"guidellm_metric{%s} %s\" % (labels, val))\n\nif len(lines) == 1:\n    sys.exit(\"no metrics in report; the schema may have changed\")\n\nlines.append(\"\
     # TYPE guidellm_run_timestamp_seconds gauge\")\nlines.append(\n    'guidellm_run_timestamp_seconds{profile=\"%s\",run=\"%s\"} %d'\n    % (profile, run_id, int(time.time()))\n)\n\nbody = \"\\n\".join(lines)\
-    \ + \"\\n\"\n\ntarget = \"%s/metrics/job/guidellm/profile/%s/model/%s\" % (push_url, profile, model)\nreq = urllib.request.Request(target, data=body.encode(), method=\"POST\")\nprint(\"pushgateway:\"\
+    \ + \"\\n\"\n\ntarget = \"%s/metrics/job/guidellm/profile/%s/model/%s\" % (push_url, profile, model.replace(\"/\", \"_\"))\nreq = urllib.request.Request(target, data=body.encode(), method=\"POST\")\nprint(\"pushgateway:\"\
     , urllib.request.urlopen(req).status, \"series:\", len(lines) - 2)\nprint(body)\n"

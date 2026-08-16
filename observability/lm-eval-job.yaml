@@ -55,7 +55,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: OPENAI_API_KEY
@@ -70,7 +70,7 @@ spec:
         - "set -euo pipefail\n# Pinned: these eval CLIs rename flags across minors, and an\n# unpinned\
           \ install has broken this Job before.\npip install --quiet --target /tmp/pip \\\n  \"lm-eval[api]==0.4.12\"\
           \ transformers\nexport PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nlm_eval --model local-completions\
-          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=terraform-code-fast,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
+          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=Qwen/Qwen3-8B,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
           \ \\\n  --tasks humaneval,mbpp \\\n  --limit 50 \\\n  --confirm_run_unsafe_code \\\n  --output_path\
           \ /tmp/lmeval\n\npython /scripts/push_lm_eval.py\n"
         volumeMounts:
@@ -132,7 +132,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: OPENAI_API_KEY
@@ -147,7 +147,7 @@ spec:
         - "set -euo pipefail\n# Pinned: these eval CLIs rename flags across minors, and an\n# unpinned\
           \ install has broken this Job before.\npip install --quiet --target /tmp/pip \\\n  \"lm-eval[api]==0.4.12\"\
           \ transformers\nexport PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nlm_eval --model local-completions\
-          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=terraform-code-fast,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
+          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=Qwen/Qwen3-8B,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
           \ \\\n  --tasks ifeval \\\n  --limit 100 \\\n  --output_path /tmp/lmeval\n\npython /scripts/push_lm_eval.py\n"
         volumeMounts:
         - name: scripts
@@ -208,7 +208,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: OPENAI_API_KEY
@@ -223,7 +223,7 @@ spec:
         - "set -euo pipefail\n# Pinned: these eval CLIs rename flags across minors, and an\n# unpinned\
           \ install has broken this Job before.\npip install --quiet --target /tmp/pip \\\n  \"lm-eval[api]==0.4.12\"\
           \ transformers\nexport PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nlm_eval --model local-completions\
-          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=terraform-code-fast,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
+          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=Qwen/Qwen3-8B,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
           \ \\\n  --tasks gsm8k,arc_challenge \\\n  --limit 100 \\\n  --output_path /tmp/lmeval\n\npython\
           \ /scripts/push_lm_eval.py\n"
         volumeMounts:
@@ -285,7 +285,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: OPENAI_API_KEY
@@ -300,7 +300,7 @@ spec:
         - "set -euo pipefail\n# Pinned: these eval CLIs rename flags across minors, and an\n# unpinned\
           \ install has broken this Job before.\npip install --quiet --target /tmp/pip \\\n  \"lm-eval[api]==0.4.12\"\
           \ transformers\nexport PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nlm_eval --model local-completions\
-          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=terraform-code-fast,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
+          \ \\\n  --model_args \"base_url=http://litellm-gateway.llm-system.svc.cluster.local:4000/v1/completions,model=Qwen/Qwen3-8B,num_concurrent=8,tokenized_requests=False,max_gen_toks=512\"\
           \ \\\n  --tasks truthfulqa_mc2 \\\n  --limit 100 \\\n  --output_path /tmp/lmeval\n\npython /scripts/push_lm_eval.py\n"
         volumeMounts:
         - name: scripts

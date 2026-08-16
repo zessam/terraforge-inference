@@ -51,7 +51,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: GUIDELLM__OPENAI__API_KEY
@@ -67,7 +67,7 @@ spec:
           \ resolves the CUDA build \u2014 several GB of wheels and a\n# long silent install.\npip install\
           \ --quiet --target /tmp/pip torch \\\n  --index-url https://download.pytorch.org/whl/cpu\npip\
           \ install --quiet --target /tmp/pip \\\n  \"guidellm==0.7.1\" \\\n  \"tracerite<2.6\"\nexport\
-          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=terraform-code-fast\"\
+          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=Qwen/Qwen3-8B\"\
           \ \\\n  --profile \"kind=poisson,rate=4\" \\\n  --constraint \"kind=max_duration,seconds=120\"\
           \ \\\n  --data \"kind=synthetic_text,prompt_tokens=128,output_tokens=128\" \\\n  --output \"\
           kind=json,path=/tmp/guidellm.json\"\n\n# Never fails the Job: the load itself is already recorded\
@@ -133,7 +133,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: GUIDELLM__OPENAI__API_KEY
@@ -149,7 +149,7 @@ spec:
           \ resolves the CUDA build \u2014 several GB of wheels and a\n# long silent install.\npip install\
           \ --quiet --target /tmp/pip torch \\\n  --index-url https://download.pytorch.org/whl/cpu\npip\
           \ install --quiet --target /tmp/pip \\\n  \"guidellm==0.7.1\" \\\n  \"tracerite<2.6\"\nexport\
-          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=terraform-code-fast\"\
+          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=Qwen/Qwen3-8B\"\
           \ \\\n  --profile \"kind=constant,rate=2\" \\\n  --constraint \"kind=max_duration,seconds=120\"\
           \ \\\n  --data \"kind=synthetic_text,prompt_tokens=128,output_tokens=128\" \\\n  --output \"\
           kind=json,path=/tmp/guidellm.json\"\n\n# Never fails the Job: the load itself is already recorded\
@@ -215,7 +215,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: GUIDELLM__OPENAI__API_KEY
@@ -231,7 +231,7 @@ spec:
           \ resolves the CUDA build \u2014 several GB of wheels and a\n# long silent install.\npip install\
           \ --quiet --target /tmp/pip torch \\\n  --index-url https://download.pytorch.org/whl/cpu\npip\
           \ install --quiet --target /tmp/pip \\\n  \"guidellm==0.7.1\" \\\n  \"tracerite<2.6\"\nexport\
-          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=terraform-code-fast\"\
+          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=Qwen/Qwen3-8B\"\
           \ \\\n  --profile \"kind=constant,rate=1\" \\\n  --constraint \"kind=max_duration,seconds=180\"\
           \ \\\n  --data \"kind=synthetic_text,prompt_tokens=256,output_tokens=1024\" \\\n  --output \"\
           kind=json,path=/tmp/guidellm.json\"\n\n# Never fails the Job: the load itself is already recorded\
@@ -297,7 +297,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: GUIDELLM__OPENAI__API_KEY
@@ -313,7 +313,7 @@ spec:
           \ resolves the CUDA build \u2014 several GB of wheels and a\n# long silent install.\npip install\
           \ --quiet --target /tmp/pip torch \\\n  --index-url https://download.pytorch.org/whl/cpu\npip\
           \ install --quiet --target /tmp/pip \\\n  \"guidellm==0.7.1\" \\\n  \"tracerite<2.6\"\nexport\
-          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=terraform-code-fast\"\
+          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=Qwen/Qwen3-8B\"\
           \ \\\n  --profile \"kind=constant,rate=1\" \\\n  --constraint \"kind=max_duration,seconds=120\"\
           \ \\\n  --data \"kind=synthetic_text,prompt_tokens=2048,output_tokens=128\" \\\n  --output \"\
           kind=json,path=/tmp/guidellm.json\"\n\n# Never fails the Job: the load itself is already recorded\
@@ -379,7 +379,7 @@ spec:
         - name: RUN_ID
           value: manual
         - name: MODEL
-          value: terraform-code-fast
+          value: Qwen/Qwen3-8B
         - name: PUSH_URL
           value: http://pushgateway.observability.svc.cluster.local:9091
         - name: GUIDELLM__OPENAI__API_KEY
@@ -395,7 +395,7 @@ spec:
           \ resolves the CUDA build \u2014 several GB of wheels and a\n# long silent install.\npip install\
           \ --quiet --target /tmp/pip torch \\\n  --index-url https://download.pytorch.org/whl/cpu\npip\
           \ install --quiet --target /tmp/pip \\\n  \"guidellm==0.7.1\" \\\n  \"tracerite<2.6\"\nexport\
-          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=terraform-code-fast\"\
+          \ PYTHONPATH=/tmp/pip PATH=/tmp/pip/bin:$PATH\n\nguidellm run \\\n  --backend \"kind=openai_http,target=http://litellm-gateway.llm-system.svc.cluster.local:4000,model=Qwen/Qwen3-8B\"\
           \ \\\n  --profile \"kind=sweep,rate=8\" \\\n  --constraint \"kind=max_duration,seconds=240\"\
           \ \\\n  --data \"kind=synthetic_text,prompt_tokens=128,output_tokens=128\" \\\n  --output \"\
           kind=json,path=/tmp/guidellm.json\"\n\n# Never fails the Job: the load itself is already recorded\

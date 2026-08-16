@@ -44,7 +44,7 @@ spec:
             - name: LITELLM_BASE_URL
               value: http://litellm-gateway:4000
             - name: DEFAULT_MODEL
-              value: terraform-code-fast
+              value: Qwen/Qwen3-8B
             # The master key, which can call every model. Swap for a virtual key
             # with a model allowlist and a budget once one exists — this app is
             # the most exposed thing in the system.
